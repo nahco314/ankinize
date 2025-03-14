@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "func-llm",
+    "google-cloud-vision>=3.10.0",
+    "mistralai>=1.5.1",
+    "openai-agents>=0.0.3",
     "opencv-python>=4.11.0.86",
     "pillow-heif>=0.21.0",
     "pillow>=11.1.0",

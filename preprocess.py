@@ -80,7 +80,9 @@ def better_color_correction(image):
 
     # 二値化(Otsuなど)
     # flattened_gray は既に0が暗部、255が明部に近いので、そのままthresholdでOK
-    _, bin_img = cv2.threshold(flattened_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, bin_img = cv2.threshold(
+        flattened_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
 
     # bin_img は 0(黒文字) or 255(白背景)。BGR に変換
     bin_bgr = cv2.cvtColor(bin_img, cv2.COLOR_GRAY2BGR)

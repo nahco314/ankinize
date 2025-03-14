@@ -1,40 +1,30 @@
+import json
 import os
-import pathlib
-import re
 
-from func_llm import SimpleAgent, PydanticParser
-from func_llm.agent import Agent
-from func_llm.library.basis import (
-    identity,
-)
-from func_llm.library.web import fetch, fetch_selenium, fetch_selenium_with_gui
-from func_llm.library.files import show
-from func_llm.library.pdf import pdf_to_markdown
-from func_llm.llm_engine import OpenAIEngine, OpenRouterEngine
-from func_llm.parse_calling import OperationRunner
-from func_llm.query import query
-from func_llm.translater import OpenRouterTranslater
+from openai import AsyncOpenAI
 from pydantic import BaseModel
+from pathlib import Path
 
+from agents import Agent, Runner, OpenAIChatCompletionsModel
+
+from cloud_vision import cloud_vision_ocr
 from model import Word
+from utils import process_image
 
-print(Word.model_json_schema())
-
-engine = OpenRouterEngine(
-    os.getenv("OPEN_ROUTER_API_KEY"), "anthropic/claude-3.7-sonnet"
-)
 
 class Result(BaseModel):
     content: list[Word]
 
-pydantic_parser = PydanticParser(Result)
-agent_0 = SimpleAgent(engine, parser=pydantic_parser)
-res: Result = agent_0.run("""
+
+json_schema = json.dumps(Result.model_json_schema(), indent=2)
+main_text = f"""
 この写真は、日本の大学受験用英単語帳である「システム英単語」の1ページです。
 この英単語帳をデータ化するために、このページを構造化して、指定されたスキーマのJSONとして出力してください。
 
 この単語帳の仕様と、出力形式に関する注意は以下の通りです。
 - この単語帳は、ページ上部に「MINIMAL PHRASES」という、重要フレーズ臭があります。今回はこれは扱わないため、完全に無視してOKです。
+- 一般的な注意として、画像に存在する文字を、忠実に、一字一句同じように出力してください。
+  - 画像が潰れていて/画質が悪くて識別不能な箇所は、文脈から判断してください。
 - 単語ごとの構成はこうなっています:
   - 右側: 英単語、発音記号、単語にまつわる問題(sub_problem)
   - 左側: 日本語での意味、頻出する形、関連語、sub_problemの答えなど
@@ -59,7 +49,9 @@ res: Result = agent_0.run("""
   - 角丸線で囲んだ「語法」: 語法や構文に注意
     - これは、「語法や構文に注意」を問題文として、その語法や構文を答えとするsub_problemにしてください。
   - Q: それ以外の一般の問題
+- 左側には、日本語の意味が含まれています。多義語の場合などは、①②などでいくつかの意味が列挙されている場合がありますが、これらはすべてanswerに含めてください。
 - 日本語での意味の中でも、特に重要なのもは赤くハイライトされています。これらは<red>タグで囲むことで表現してください。
+  - 単語本体だけでなく、赤くなっている部分全体を<red>で囲んでください。赤くない部分は決して囲まないでください。
 - 日本語での意味における、「動」や「名」などの漢字を四角で囲んだ記号は、「動詞形」などという意味です。出力には、「動詞形」などの形で含めてください。
 - 日本語での意味の説明において、存在する記号は以下の通りです。これらはそのままの記号で出力に含めてください(四角で囲んだ「動」などは単に漢字1文字を含めてください)。
   - 四角で囲んだ「動」: 動詞形
@@ -79,8 +71,46 @@ res: Result = agent_0.run("""
   - <<英>>: 英国での使い方
 - 単語の日本語表現(複数ある場合もある)と、それに直接含まれる説明のみをanswerに、それ以外の説明をdescriptionに含めてください。
 - 右側、あるいは稀に左側に位置する発音記号(アクセントも含む)をphoneticに含めてください。
-""", files=[pathlib.Path("./processed/2.png")])
 
-for c in res.content:
+JSON schema:
+{json_schema}
+"""
+
+external_client = AsyncOpenAI(
+    api_key=os.getenv("OPEN_ROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1",
+)
+
+agent = Agent(
+    name="Wordbook OCR",
+    output_type=Result,
+    model=OpenAIChatCompletionsModel(
+        model="anthropic/claude-3.7-sonnet",
+        openai_client=external_client,
+    ),
+    instructions="指示に従い、OCR/構造化を行ってください。なお、出力には結果のみを含め、それ以外のあらゆる情報や補足、コードブロックの記号などは一切含まないでください。"
+)
+
+result = Runner.run_sync(
+    agent,
+    [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": main_text,
+                },
+                {
+                    "type": "input_image",
+                    "detail": "high",
+                    "image_url": process_image(Path("processed/2.png")),
+                },
+            ],
+        },
+    ],
+)
+
+for c in result.final_output.content:
     print(c.model_dump_json(indent=2))
     print("----------------")
