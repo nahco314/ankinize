@@ -9,6 +9,7 @@ from page_dewarp import page_dewarp
 from PIL import Image
 import pillow_heif
 
+
 def remove_shadows_and_flatten(image):
     """
     モルフォロジーを使って背景の濃淡を推定し、影や照明ムラを補正して
@@ -19,25 +20,15 @@ def remove_shadows_and_flatten(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # --- 手法1: モルフォロジー閉じ処理で背景推定 ---
-    # 大きめのカーネルで morphClose を行うと、文字より広い領域が潰されて
-    # 背景の濃淡(シャドウ)が抽出されやすくなる。
-    # カーネルサイズは画像の解像度に応じて変える（例: (51,51) や (101,101)など）
     kernel_size = 51
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     bg = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
 
-    # bg は「背景の濃淡が大きくぼやけた画像」。これを使って、
-    # 元の gray から差分 or 割り算をして影を除去する。
-
-    # 差分方式: diff = (gray - bg) の絶対値を反転させるなど
-    # 割り算方式: ratio = gray / bg で正規化
-    # ここでは「差分＋反転」で背景を明るく、文字を暗くする例を使う
+    # 差分を反転して影領域を明るくする
     diff = cv2.absdiff(gray, bg)
-    # 文字部分は大きな差分 -> 白くなるが、背景は差分小 -> 黒っぽくなる。
-    # OCRしやすいように背景が白、文字が黒になるように反転
     shadow_removed = 255 - diff
 
-    # 0-255 に正規化しておく（不要ならスキップ可）
+    # 0-255 に正規化
     shadow_removed = cv2.normalize(shadow_removed, None, 0, 255, cv2.NORM_MINMAX)
     shadow_removed = shadow_removed.astype(np.uint8)
 
@@ -51,7 +42,7 @@ def mask_red(image):
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    # 赤色の色相範囲(例: 0-10, 170-180) → 要調整
+    # 赤色の色相範囲(例: 0-10, 170-180)
     lower_red1 = np.array([0, 50, 50])
     upper_red1 = np.array([10, 255, 255])
     lower_red2 = np.array([170, 50, 50])
@@ -68,9 +59,14 @@ def better_color_correction(image):
     """
     1) 影や照明ムラを除去してグレースケールでフラット化
     2) 赤文字だけは元色を残す
-    3) その他の部分は二値化（背景=白, 文字=黒）したい
+    3) その他の部分は二値化（背景=白, 文字=黒）
 
-    戻り値: BGR画像（赤文字は赤、それ以外は白黒）
+    さらに追加で、
+    - 純粋に白黒化した画像
+    - 赤ピクセルのみ取り出した画像
+    も返すようにする
+
+    戻り値: (赤+白黒画像, 白黒画像, 赤ピクセルのみ画像) の3つ
     """
     # まず赤マスクを取得
     red_mask = mask_red(image)
@@ -78,22 +74,26 @@ def better_color_correction(image):
     # 背景フラット化（グレースケール）
     flattened_gray = remove_shadows_and_flatten(image)
 
-    # 二値化(Otsuなど)
-    # flattened_gray は既に0が暗部、255が明部に近いので、そのままthresholdでOK
-    _, bin_img = cv2.threshold(
-        flattened_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
+    # 二値化(Otsu)
+    _, bin_img = cv2.threshold(flattened_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # bin_img は 0(黒文字) or 255(白背景)。BGR に変換
+    # bin_img は0か255の白黒 => 3chに変換しておく
     bin_bgr = cv2.cvtColor(bin_img, cv2.COLOR_GRAY2BGR)
 
-    # 赤領域だけは元の画像を使用する
-    red_mask_3ch = cv2.merge([red_mask, red_mask, red_mask])  # shape同じ3chマスク
+    # ========== (1) 赤 + 白黒 ==========
+    # 赤領域だけは元のカラーを使う
+    red_mask_3ch = cv2.merge([red_mask, red_mask, red_mask])  # 3chマスク
+    red_and_bw = np.where(red_mask_3ch == 255, image, bin_bgr)
 
-    # 出力画像 = 赤マスク部分は「元のカラー」、それ以外は「白黒二値」
-    out = np.where(red_mask_3ch == 255, image, bin_bgr)
+    # ========== (2) 純粋に白黒化した画像 ==========
+    # flattened_gray の二値化結果 bin_bgr をそのまま「白黒版」として使う
+    mono = bin_bgr.copy()
 
-    return out
+    # ========== (3) 赤ピクセルのみ取り出した画像 ==========
+    # 背景を黒にして、赤マスク部分だけ元画像から抜き出す
+    red_only = cv2.bitwise_and(image, image, mask=red_mask)
+
+    return red_and_bw, mono, red_only
 
 
 def read_heic_to_numpy(file_path: str):
@@ -109,26 +109,39 @@ def read_heic_to_numpy(file_path: str):
 
 
 def main():
-    # inputs フォルダ内の png 画像を処理して processed フォルダに出力
-    input_files = sorted(Path("./inputs").glob("*.HEIC"))
-    os.makedirs("processed", exist_ok=True)
+    name = "0-normal"
+
+    # 入力パスを取得
+    input_files = sorted(Path(f"./inputs-{name}").glob("*.heic"))
+
+    # 出力フォルダを作成
+    os.makedirs(f"processed-{name}", exist_ok=True)
+    os.makedirs(f"processed-{name}/mono", exist_ok=True)
+    os.makedirs(f"processed-{name}/red", exist_ok=True)
 
     for i, input_file in enumerate(input_files):
         input_file: Path
-        filename = input_file.name.replace(".HEIC", ".png")
-        output_file = f"processed/{i}.png"
+        # 出力ファイル名のベース
+        filename_base = str(i)  # または input_file.stem などでもOK
 
+        # HEIC読み込み
         image = read_heic_to_numpy(input_file)
 
+        # 1. ページの歪み補正
         warped = page_dewarp(image)
 
-        final_result = warped
+        # 2. カラー調整 (赤 + 白黒 / 白黒のみ / 赤のみ)
+        red_bw_result, mono_result, red_only_result = better_color_correction(warped)
 
-        # 2. カラー調整 (白黒 + 赤)
-        # final_result = better_color_correction(image)
+        # 3. それぞれ保存
+        # 赤+白黒 (従来通り processed/ に保存)
+        cv2.imwrite(f"processed-{name}/{filename_base}.png", red_bw_result)
 
-        # 結果を保存
-        cv2.imwrite(output_file, final_result)
+        # 白黒のみ (processed/mono/ に保存)
+        cv2.imwrite(f"processed-{name}/mono/{filename_base}.png", mono_result)
+
+        # 赤のみ (processed/red/ に保存)
+        cv2.imwrite(f"processed-{name}/red/{filename_base}.png", red_only_result)
 
 
 if __name__ == "__main__":

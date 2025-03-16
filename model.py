@@ -39,3 +39,16 @@ class Word(BaseModel):
 class MinimalPhrase(BaseModel):
     english: str
     japanese: str
+
+
+class Result(BaseModel):
+    content: list[Word]
+
+
+class MetaData(BaseModel):
+    input_image_name: str
+
+
+class FinalResult(BaseModel):
+    result: Result
+    metadata: MetaData
