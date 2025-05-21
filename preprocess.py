@@ -109,7 +109,7 @@ def read_heic_to_numpy(file_path: str):
 
 
 def main():
-    name = "0-normal"
+    name = "0-tagigo"
 
     # 入力パスを取得
     input_files = sorted(Path(f"./inputs-{name}").glob("*.heic"))

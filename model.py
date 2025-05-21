@@ -41,8 +41,19 @@ class MinimalPhrase(BaseModel):
     japanese: str
 
 
+class TagigoMinimalPhrase(BaseModel):
+    headword: str
+    phrases: list[MinimalPhrase]
+    description: str
+    phonetic: str
+
+
 class Result(BaseModel):
     content: list[Word]
+
+
+class TagigoResult(BaseModel):
+    content: list[TagigoMinimalPhrase]
 
 
 class MetaData(BaseModel):
@@ -50,5 +61,5 @@ class MetaData(BaseModel):
 
 
 class FinalResult(BaseModel):
-    result: Result
+    result: Result | TagigoResult
     metadata: MetaData

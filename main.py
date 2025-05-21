@@ -11,7 +11,7 @@ from pathlib import Path
 from agents import Agent, Runner, OpenAIChatCompletionsModel
 
 from cloud_vision import cloud_vision_ocr
-from model import Result, MetaData, FinalResult
+from model import Result, MetaData, FinalResult, TagigoResult
 from utils import process_image, retrynize
 
 
@@ -22,12 +22,13 @@ class Context(BaseModel):
     mono_ocr: str
     red_ocr: str
 
-    normal_json_schema: str
+    json_schema: str
 
 
 minimal_phrase_ranges = [
-    range(140, 179),
-    range(225, 272),
+    # range(140, 179),
+    # range(225, 272),
+    range(0, 31)
 ]
 
 all_minimal_phrase_nums = []
@@ -138,6 +139,58 @@ minimal_phrase_format_text = """
 """
 
 
+tagigo_minimal_phrase_format_text = """
+この単語帳の仕様と、出力形式に関する注意は以下の通りです。
+- この単語帳は、複数の用法が存在する単語(多義語)について、それぞれの用法の例文(フレーズ)と、その日本語訳を載せています。それらの全ての例文と日本語訳をOCRしてください。
+- 一般的な注意として、画像に存在する文字を、忠実に、一字一句同じように出力してください。
+  - 画像が潰れていて/画質が悪くて識別不能な箇所は、文脈から判断してください。
+- フレーズごとの構成はこうなっています:
+  - 一番上に、見出しとして、扱う単語
+  - 見出しの右隣に問題についての注意が「☆発音に注意」みたいな感じで存在する場合がある
+  - 見出しの下に、複数の用法について以下のような書式フレーズが記載される
+    - 左側: 英語でのフレーズ
+    - 右側: 日本語での意味
+  - 一番下に、問題についての注意や単語の他の用法、関連語が記述されている場合がある
+- 左右両方について、特に重要な部分や、問題として問いたい部分は赤い文字で書かれています。そのような部分は、<red></red>タグで囲んでください。
+- 見出しはheadwordに含めてください。
+- フレーズごとに英語と日本語訳をenglish,japaneseとしてまとめたものを、phrasesにリストとして含めてください。
+- 問題についての注意や単語の他の用法、関連語については、descriptionフィールドに含めてください。
+- 見出しの右側に位置する発音記号(アクセントも含む)をphoneticに含めてください。存在しない場合は空文字列で結構です。
+- 一番下の部分などに、単語について注意する必要がある項目に関する問題が含まれることがあります。これらは、その右側に答えが位置しているため、その答えと併せてdescriptionフィールドに含めてください。
+  動詞形などを聞く問題は「動詞形は何ですか」などを問題文として、一般の問題(Q)はその問題文を問題文として、答えは普通に答えを含めてください。
+  また、「同？2つ」などの形で、問題に関するさらなる補足が含まれる場合もあるため、それも問題分として含めてください。
+  種類は以下の通りです。
+  - 角丸線で囲んだ「動？」: 動詞形は何ですか
+  - 角丸線で囲んだ「名？」: 名詞形は何ですか
+  - 角丸線で囲んだ「形？」: 形容詞形は何ですか
+  - 角丸線で囲んだ「副？」: 副詞形は何ですか
+  - 角丸線で囲んだ「接？」: 接続詞形は何ですか
+  - 角丸線で囲んだ「同？」: 同義語は何ですか
+  - 角丸線で囲んだ「反？」: 反意語は何ですか
+  - 角丸線で囲んだ「同熟？」: 同じ意味を表す熟語は何ですか
+  - 角丸線で囲んだ「語法」: 語法や構文に注意
+  - Q: それ以外の一般の問題
+- 日本語での意味における、「動」や「名」などの漢字を四角で囲んだ記号は、「動詞形」などという意味です。出力には、`<動>`のように含めてください。
+- 日本語での意味の説明において、存在する記号は以下の通りです。これらはそのままの記号で出力に含めてください(四角で囲んだ「動」などは、`<動>`のように含めてください。)。
+  - 四角で囲んだ「動」: 動詞形
+  - 四角で囲んだ「名」: 名詞形
+  - 四角で囲んだ「形」: 形容詞形
+  - 四角で囲んだ「副」: 副詞形
+  - 四角で囲んだ「接」: 接続詞形
+  - 四角で囲んだ「前」: 前置詞形
+  - 四角で囲んだ「源」: 語源の説明
+  - 四角で囲んだ「諺」: ことわざ
+  - =: 同義語
+  - ⇔: 反意語
+  - ◇ (中空のひし形): 派生語・関連語
+  - ◆ (中黒のひし形): 熟語・成句
+  - cf.: 参照
+  - <<米>>: 米国での使い方
+  - <<英>>: 英国での使い方
+- 単語の品詞を表す、漢字1文字の「動」や「形」は、前述した通り<動>や<形>としてください。
+"""
+
+
 @retrynize
 async def process_normal(ctx: Context, ocr_agent, structure_agent) -> Result:
     llm_ocr_text = f"""
@@ -147,7 +200,7 @@ async def process_normal(ctx: Context, ocr_agent, structure_agent) -> Result:
 {normal_format_text}
 
 JSON schema:
-{ctx.normal_json_schema}
+{ctx.json_schema}
 """
 
     llm_ocr_result = await Runner.run(
@@ -202,7 +255,7 @@ OCR data (only red parts):
 {ctx.red_ocr}
 
 JSON schema:
-{ctx.normal_json_schema}
+{ctx.json_schema}
 """
 
     result = await Runner.run(
@@ -232,7 +285,7 @@ async def process_minimal_phrase(ctx: Context, ocr_agent, structure_agent) -> Re
 {minimal_phrase_format_text}
 
 JSON schema:
-{ctx.normal_json_schema}
+{ctx.json_schema}
 """
 
     llm_ocr_result = await Runner.run(
@@ -287,7 +340,88 @@ OCR data (only red parts):
 {ctx.red_ocr}
 
 JSON schema:
-{ctx.normal_json_schema}
+{ctx.json_schema}
+"""
+
+    result = await Runner.run(
+        structure_agent,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": main_text,
+                    },
+                ],
+            },
+        ],
+    )
+
+    return result.final_output
+
+
+@retrynize
+async def process_tagigo_minimal_phrase(
+    ctx: Context, ocr_agent, structure_agent
+) -> Result:
+    llm_ocr_text = f"""
+以下は、日本の大学受験用英単語帳である「システム英単語」の1ページの画像です。
+この英単語帳をデータ化するために、このページを構造化して、指定されたスキーマのJSONとして出力してください。
+
+{tagigo_minimal_phrase_format_text}
+
+JSON schema:
+{ctx.json_schema}
+"""
+    print(llm_ocr_text)
+
+    llm_ocr_result = await Runner.run(
+        ocr_agent,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": llm_ocr_text,
+                    },
+                    {
+                        "type": "input_image",
+                        "detail": "high",
+                        "image_url": process_image(ctx.normal_base / ctx.name),
+                    },
+                ],
+            },
+        ],
+    )
+    llm_ocr_json = llm_ocr_result.final_output.model_dump_json(indent=2)
+
+    main_text = f"""
+以下は、日本の大学受験用英単語帳である「システム英単語」の1ページの画像を、LLMと古典的な手法の2通りでOCRしたデータです。
+この英単語帳をデータ化するために、このページを構造化して、指定されたスキーマのJSONとして出力してください。
+- LLMの出力は既に構造化されています。しかし、文字の同定の精度に問題があったり、表現などに問題があるので、そういった点を古典的手法の結果と比べた上で校正してください。修正すべき間違いの例:
+  - 漢字の「名？」と「動」を読み間違えて、「名詞化は？」と「動詞化は？」を間違える
+  - 「名詞化は？」などと記述しなければならないところを、「名？」などとのみ書いてしまう
+  - <動>や<形>としなければならない場所を漢字1文字で動や形などとしている
+  - <動>や<形>、◇や◆を抜かしてしまっている
+  - **「」ではなく[]を使用してしまっている。発音記号の箇所以外は、基本的にかぎかっことして「」を使うこと**
+  - 英語のフレーズ(wordフィールド)に<red>で囲まれた部分が存在しない。すべてのフレーズには、赤い部分が存在するはずなので、それを見つけて<red>で囲むこと
+- 古典的な手法のOCRの出力は、構造化が行われていません。テキストの順番や位置関係が実際のものと入れ替わっていたりします。しかし、文字自体の同定の精度は非常に高いため、単語や文字が実際に何であるかはLLMよりも信頼できます。
+
+{tagigo_minimal_phrase_format_text}
+
+LLM data:
+{llm_ocr_json}
+
+OCR data:
+{ctx.mono_ocr}
+
+OCR data (only red parts):
+{ctx.red_ocr}
+
+JSON schema:
+{ctx.json_schema}
 """
 
     result = await Runner.run(
@@ -320,7 +454,7 @@ async def cloud_vision_ocr_async(image_path: Path) -> str:
 
 
 async def process(num: int):
-    class_id = "0-normal"
+    class_id = "0-tagigo"
     mono_base = Path(f"processed-{class_id}/mono")
     red_base = Path(f"processed-{class_id}/red")
     normal_base = Path(f"processed-{class_id}")
@@ -332,7 +466,7 @@ async def process(num: int):
     red_ocr_task = asyncio.create_task(cloud_vision_ocr_async(red_base / name))
     mono_ocr, red_ocr = await asyncio.gather(mono_ocr_task, red_ocr_task)
 
-    json_schema = json.dumps(Result.model_json_schema(), indent=2)
+    json_schema = json.dumps(TagigoResult.model_json_schema(), indent=2)
 
     external_client = AsyncOpenAI(
         api_key=os.getenv("OPEN_ROUTER_API_KEY"),
@@ -341,7 +475,7 @@ async def process(num: int):
 
     ocr_agent = Agent(
         name="Wordbook OCR",
-        output_type=Result,
+        output_type=TagigoResult,
         model=OpenAIChatCompletionsModel(
             model="anthropic/claude-3.7-sonnet",
             openai_client=external_client,
@@ -351,7 +485,7 @@ async def process(num: int):
 
     structure_agent = Agent(
         name="Wordbook OCR",
-        output_type=Result,
+        output_type=TagigoResult,
         model=OpenAIChatCompletionsModel(
             model="anthropic/claude-3.7-sonnet",
             openai_client=external_client,
@@ -364,12 +498,16 @@ async def process(num: int):
         normal_base=normal_base,
         mono_ocr=mono_ocr,
         red_ocr=red_ocr,
-        normal_json_schema=json_schema,
+        json_schema=json_schema,
     )
 
     if not num in all_minimal_phrase_nums:
-        task_normal = asyncio.create_task(process_normal(ctx, ocr_agent, structure_agent))
-        task_minimal = asyncio.create_task(process_minimal_phrase(ctx, ocr_agent, structure_agent))
+        task_normal = asyncio.create_task(
+            process_normal(ctx, ocr_agent, structure_agent)
+        )
+        task_minimal = asyncio.create_task(
+            process_minimal_phrase(ctx, ocr_agent, structure_agent)
+        )
         res, res_minimal = await asyncio.gather(task_normal, task_minimal)
 
         final_res = FinalResult(
@@ -392,7 +530,7 @@ async def process(num: int):
             f.write(final_res_minimal.model_dump_json(indent=2))
 
     else:
-        res = await process_minimal_phrase(
+        res = await process_tagigo_minimal_phrase(
             ctx,
             ocr_agent,
             structure_agent,
@@ -414,9 +552,10 @@ async def main():
     # 272ページまでを10ページ刻みでバッチにする例
     batch_lst = list(batched(range(272), 50))
     # ここでは最初のバッチのみ処理する例
-    tasks = [process(i) for i in batch_lst[5]]
+    # tasks = [process(i) for i in batch_lst[5]]
+    tasks = [process(i) for i in range(31)]
     await asyncio.gather(*tasks)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
