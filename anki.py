@@ -10,9 +10,8 @@ import re
 import genanki
 from google.cloud import texttospeech
 
-from model import FinalResult, Word, MetaData, Result, TagigoMinimalPhrase
+from model import FinalResult, Word, MetaData
 from utils import retrynize
-
 
 TTS_SEMAPHORE = asyncio.Semaphore(5)
 
@@ -84,12 +83,10 @@ async def generate_tts_file_gcloud_async(text: str, lang_code: str = "en-US") ->
     loop = asyncio.get_running_loop()
     async with TTS_SEMAPHORE:
         # セマフォで同時実行数を制限
-        return await loop.run_in_executor(
-            None, generate_tts_file_gcloud_sync, text, lang_code
-        )
+        return await loop.run_in_executor(None, generate_tts_file_gcloud_sync, text, lang_code)
 
 
-normal_model = genanki.Model(
+my_model = genanki.Model(
     1607392319,
     "Simple Model",
     fields=[
@@ -139,7 +136,7 @@ normal_model = genanki.Model(
         {{#phonetic}}
         <div class="phonetic">{{phonetic}}</div>
         {{/phonetic}}
-        
+
         {{#audio}}
         <div class="audio">{{audio}}</div>
         {{/audio}}
@@ -200,7 +197,7 @@ normal_model = genanki.Model(
       margin-top: 0.5em;
       color: #333; /* 赤色を廃止 */
     }
-    
+
     .red-text {
       color: red;
     }
@@ -225,110 +222,6 @@ normal_model = genanki.Model(
       border-top: 1px solid #ccc;
     }
     """,
-)
-
-tagigo_model = genanki.Model(
-    1607392319,
-    "Simple Model",
-    fields=[
-        {"name": "headword"},
-        {"name": "english"},
-        {"name": "japanese"},
-        {"name": "description"},
-        {"name": "phonetic"},
-        {"name": "meta_png"},
-        {"name": "audio"},
-    ],
-    templates=[
-        {
-            "name": "Card 1",
-            "qfmt": """
-<div class="card">
-  <!-- headword がある場合のみ控えめに表示 -->
-  {{#headword}}
-  <div class="headword">{{headword}}</div>
-  {{/headword}}
-
-  <!-- 英語フレーズ（必須）。改行や <br> は事前に生成段階で埋め込む想定 -->
-  <div class="front-question">{{english}}</div>
-</div>
-""",
-            "afmt": """
-<div class="card">
-  <!-- 表面を再掲 -->
-  {{FrontSide}}
-  <hr id="answer">
-
-  <div class="answer-section">
-    {{#japanese}}<div class="japanese">{{japanese}}</div>{{/japanese}}
-    {{#description}}<div class="description">{{description}}</div>{{/description}}
-    {{#phonetic}}<div class="phonetic">{{phonetic}}</div>{{/phonetic}}
-
-    <!-- 音声があれば表示 (genanki の [sound:xxx.mp3] をそのまま) -->
-    {{#audio}}<div class="audio">{{audio}}</div>{{/audio}}
-  </div>
-</div>
-""",
-        },
-    ],
-    css="""
-/* --- ベースデザイン (normal_model と同一) --- */
-.card {
-  font-family: "Helvetica Neue", Arial, sans-serif;
-  font-size: 16px;
-  line-height: 1.6;
-  color: #333;
-  background-color: #fafafa;
-  padding: 12px;
-  border-radius: 8px;
-}
-
-/* headword（多義語の語源語） */
-.headword {
-  text-align: center;
-  font-size: 1.5em;
-  color: #aaa;
-  margin-bottom: 0.3em;
-}
-    
-.red-text {
-  color: red;
-}
-
-/* メイン問題（英語フレーズ一覧） */
-.front-question {
-  text-align: center;
-  font-size: 1.8em;
-  font-weight: bold;
-  color: #2c3e50;
-}
-
-/* 答え面レイアウト */
-.japanese {
-  font-size: 1.2em;
-  font-weight: bold;
-  margin-top: 0.5em;
-  color: #333;
-}
-
-.description {
-  margin-top: 1em;
-  color: #444;
-}
-
-.phonetic {
-  margin-top: 1em;
-  font-style: italic;
-  color: #7f8c8d;
-}
-
-/* 区切り線 */
-hr#answer {
-  margin: 1em 0;
-  border: 0;
-  border-top: 1px solid #ccc;
-}
-     """,
 )
 
 
@@ -403,7 +296,7 @@ async def gen_note_async(word: Word, metadata: MetaData) -> genanki.Note:
 
     # Noteオブジェクト生成
     note = genanki.Note(
-        model=normal_model,
+        model=my_model,
         fields=[
             escape(word.word),  # english
             escape(word.answer),  # japanese
@@ -413,45 +306,7 @@ async def gen_note_async(word: Word, metadata: MetaData) -> genanki.Note:
             notes,  # notes
             escape(word.phonetic),  # phonetic
             str(metadata.input_image_name),  # meta_png
-            audio_field,  # audio
-        ],
-    )
-    return note
-
-
-async def gen_tagigo_note_async(
-    word: TagigoMinimalPhrase, metadata: MetaData
-) -> genanki.Note:
-    """
-    Word の情報からノートを作る。
-    ただし TTS ファイル生成 (gTTS) を非同期化。
-    """
-
-    all_phrases = ""
-    all_english = ""
-    all_japanese = ""
-    for i, phrase in enumerate(word.phrases, start=1):
-        all_phrases += f"{i}. {phrase.english}\n"
-        all_english += f"{i}. {phrase.english}\n"
-        all_japanese += f"{i}. {phrase.japanese}\n"
-
-    # TTS の音声ファイルを生成（非同期）
-    tts_file_path = await generate_tts_file_gcloud_async(all_phrases)
-
-    # Anki フィールドに [sound:xxx.mp3] を仕込む
-    audio_field = f"[sound:{tts_file_path.name}]"  # パスのうちファイル名のみ指定
-
-    # Noteオブジェクト生成
-    note = genanki.Note(
-        model=tagigo_model,
-        fields=[
-            escape(word.headword),  # headword
-            escape(all_english),  # english
-            escape(all_japanese),  # japanese
-            escape(word.description).replace("\n", "<br>"),  # description
-            escape(word.phonetic),  # phonetic
-            str(metadata.input_image_name),  # meta_png
-            audio_field,  # audio
+            audio_field  # audio
         ],
     )
     return note
@@ -461,14 +316,13 @@ async def gen_tagigo_note_async(
 # メインの処理を async 化
 ############################
 
-
 async def main():
-    base = Path("./outputs-0-tagigo")
+    base = Path("./outputs-1-normal")
     my_deck = genanki.Deck(2059400110, "システム英単語 Basic")
 
     # JSON を走査して Word, MetaData を取得する処理（例）
     all_tasks = []
-    for i in range(31):
+    for i in range(311):
         normal_path = base / f"{i}.json"
         minimal_path = base / f"{i}-minimal.json"
 
@@ -476,21 +330,11 @@ async def main():
             if path.exists():
                 content = path.read_text(encoding="utf-8")
                 final_res = FinalResult.model_validate_json(content)
-                res = final_res.result
 
                 # 複数 Word を async ノート生成
-                if isinstance(res, Result):
-                    for c in res.content:
-                        task = asyncio.create_task(
-                            gen_note_async(c, final_res.metadata)
-                        )
-                        all_tasks.append(task)
-                else:
-                    for c in res.content:
-                        task = asyncio.create_task(
-                            gen_tagigo_note_async(c, final_res.metadata)
-                        )
-                        all_tasks.append(task)
+                for c in final_res.result.content:
+                    task = asyncio.create_task(gen_note_async(c, final_res.metadata))
+                    all_tasks.append(task)
 
     # ここで一気に TTS を並列実行させ、Noteを作る
     notes = await asyncio.gather(*all_tasks)

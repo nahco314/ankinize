@@ -8,11 +8,14 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pathlib import Path
 
-from agents import Agent, Runner, OpenAIChatCompletionsModel
+from agents import Agent, Runner, OpenAIChatCompletionsModel, enable_verbose_stdout_logging
 
 from cloud_vision import cloud_vision_ocr
 from model import Result, MetaData, FinalResult, TagigoResult
 from utils import process_image, retrynize
+
+
+# enable_verbose_stdout_logging()
 
 
 class Context(BaseModel):
@@ -26,9 +29,9 @@ class Context(BaseModel):
 
 
 minimal_phrase_ranges = [
-    # range(140, 179),
-    # range(225, 272),
-    range(0, 31)
+    range(66, 105),
+    range(151, 198),
+    range(224, 311),
 ]
 
 all_minimal_phrase_nums = []
@@ -196,6 +199,7 @@ async def process_normal(ctx: Context, ocr_agent, structure_agent) -> Result:
     llm_ocr_text = f"""
 以下は、日本の大学受験用英単語帳である「システム英単語」の1ページの画像です。
 この英単語帳をデータ化するために、このページを構造化して、指定されたスキーマのJSONとして出力してください。
+なお、画像は見切れている場合があります。文章や単語が途中で切れていたり、欠けていたりする場合、文脈から予測し、適切に補ってください。
 
 {normal_format_text}
 
@@ -227,6 +231,7 @@ JSON schema:
     main_text = f"""
 以下は、日本の大学受験用英単語帳である「システム英単語」の1ページの画像を、LLMと古典的な手法の2通りでOCRしたデータです。
 この英単語帳をデータ化するために、このページを構造化して、指定されたスキーマのJSONとして出力してください。
+
 - LLMの出力は既に構造化されています。しかし、文字の同定の精度に問題があったり、表現などに問題があるので、そういった点を古典的手法の結果と比べた上で校正してください。修正すべき間違いの例:
   - 漢字の「名？」と「動」を読み間違えて、「名詞化は？」と「動詞化は？」を間違える
   - 「名詞化は？」などと記述しなければならないところを、「名？」などとのみ書いてしまう
@@ -281,6 +286,7 @@ async def process_minimal_phrase(ctx: Context, ocr_agent, structure_agent) -> Re
     llm_ocr_text = f"""
 以下は、日本の大学受験用英単語帳である「システム英単語」の1ページの画像です。
 この英単語帳をデータ化するために、このページを構造化して、指定されたスキーマのJSONとして出力してください。
+なお、画像は見切れている場合があります。文章や単語が途中で切れていたり、欠けていたりする場合、文脈から予測し、適切に補ってください。
 
 {minimal_phrase_format_text}
 
@@ -326,6 +332,7 @@ JSON schema:
   - sub_problemsでの答え部分にAみたいなのを付ける場合は、ピリオドを付ける(「A. 〜〜」というふうに)
   - **「」ではなく[]を使用してしまっている。発音記号の箇所以外は、基本的にかぎかっことして「」を使うこと**
   - 英語のフレーズ(wordフィールド)に<red>で囲まれた部分が存在しない。すべてのフレーズには、赤い部分が存在するはずなので、それを見つけて<red>で囲むこと
+  - notesに「多義」「語法」以外のものを入れている。「反？」などはsub_problemsに入れること
 - 古典的な手法のOCRの出力は、構造化が行われていません。テキストの順番や位置関係が実際のものと入れ替わっていたりします。しかし、文字自体の同定の精度は非常に高いため、単語や文字が実際に何であるかはLLMよりも信頼できます。
 
 {minimal_phrase_format_text}
@@ -374,7 +381,6 @@ async def process_tagigo_minimal_phrase(
 JSON schema:
 {ctx.json_schema}
 """
-    print(llm_ocr_text)
 
     llm_ocr_result = await Runner.run(
         ocr_agent,
@@ -454,7 +460,7 @@ async def cloud_vision_ocr_async(image_path: Path) -> str:
 
 
 async def process(num: int):
-    class_id = "0-tagigo"
+    class_id = "1-normal"
     mono_base = Path(f"processed-{class_id}/mono")
     red_base = Path(f"processed-{class_id}/red")
     normal_base = Path(f"processed-{class_id}")
@@ -466,7 +472,7 @@ async def process(num: int):
     red_ocr_task = asyncio.create_task(cloud_vision_ocr_async(red_base / name))
     mono_ocr, red_ocr = await asyncio.gather(mono_ocr_task, red_ocr_task)
 
-    json_schema = json.dumps(TagigoResult.model_json_schema(), indent=2)
+    json_schema = json.dumps(Result.model_json_schema(), indent=2)
 
     external_client = AsyncOpenAI(
         api_key=os.getenv("OPEN_ROUTER_API_KEY"),
@@ -475,7 +481,7 @@ async def process(num: int):
 
     ocr_agent = Agent(
         name="Wordbook OCR",
-        output_type=TagigoResult,
+        output_type=Result,
         model=OpenAIChatCompletionsModel(
             model="anthropic/claude-3.7-sonnet",
             openai_client=external_client,
@@ -485,7 +491,7 @@ async def process(num: int):
 
     structure_agent = Agent(
         name="Wordbook OCR",
-        output_type=TagigoResult,
+        output_type=Result,
         model=OpenAIChatCompletionsModel(
             model="anthropic/claude-3.7-sonnet",
             openai_client=external_client,
@@ -500,6 +506,10 @@ async def process(num: int):
         red_ocr=red_ocr,
         json_schema=json_schema,
     )
+
+    if (output_base / f"{num}-minimal.json").exists():
+        print(f"pass {num}")
+        return
 
     if not num in all_minimal_phrase_nums:
         task_normal = asyncio.create_task(
@@ -530,7 +540,7 @@ async def process(num: int):
             f.write(final_res_minimal.model_dump_json(indent=2))
 
     else:
-        res = await process_tagigo_minimal_phrase(
+        res = await process_minimal_phrase(
             ctx,
             ocr_agent,
             structure_agent,
@@ -549,11 +559,8 @@ async def process(num: int):
 
 
 async def main():
-    # 272ページまでを10ページ刻みでバッチにする例
-    batch_lst = list(batched(range(272), 50))
-    # ここでは最初のバッチのみ処理する例
-    # tasks = [process(i) for i in batch_lst[5]]
-    tasks = [process(i) for i in range(31)]
+    batch_lst = list(batched(range(311), 50))
+    tasks = [process(i) for i in batch_lst[6]]
     await asyncio.gather(*tasks)
 
 

@@ -109,7 +109,7 @@ def read_heic_to_numpy(file_path: str):
 
 
 def main():
-    name = "0-tagigo"
+    name = "1-normal"
 
     # 入力パスを取得
     input_files = sorted(Path(f"./inputs-{name}").glob("*.heic"))
@@ -119,16 +119,23 @@ def main():
     os.makedirs(f"processed-{name}/mono", exist_ok=True)
     os.makedirs(f"processed-{name}/red", exist_ok=True)
 
-    for i, input_file in enumerate(input_files):
+    for i, input_file in list(enumerate(input_files)):
         input_file: Path
         # 出力ファイル名のベース
         filename_base = str(i)  # または input_file.stem などでもOK
+
+        if Path(f"processed-{name}/{filename_base}.png").exists():
+            continue
 
         # HEIC読み込み
         image = read_heic_to_numpy(input_file)
 
         # 1. ページの歪み補正
-        warped = page_dewarp(image)
+        try:
+            # warped = page_dewarp(image)
+            raise Exception
+        except:
+            warped = image
 
         # 2. カラー調整 (赤 + 白黒 / 白黒のみ / 赤のみ)
         red_bw_result, mono_result, red_only_result = better_color_correction(warped)

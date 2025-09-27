@@ -5,18 +5,18 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "genanki>=0.13.1",
-    "google-cloud-texttospeech>=2.25.0",
-    "google-cloud-vision>=3.10.0",
-    "gtts>=2.5.4",
-    "mistralai>=1.5.1",
-    "openai-agents>=0.0.3",
-    "opencv-python>=4.11.0.86",
-    "pillow-heif>=0.21.0",
-    "pillow>=11.1.0",
-    "pydantic>=2.10.6",
-    "pyheif>=0.8.0",
-    "scipy>=1.15.2",
+  "genanki>=0.13.1",
+  "google-cloud-texttospeech>=2.25.0",
+  "google-cloud-vision>=3.10.0",
+  "gtts>=2.5.4",
+  "mistralai>=1.5.1",
+  "openai-agents>=0.0.15",
+  "opencv-python>=4.11.0.86",
+  "pillow-heif>=0.21.0",
+  "pillow>=11.1.0",
+  "pydantic>=2.10.6",
+  "pyheif>=0.8.0",
+  "scipy>=1.15.2",
 ]
 
 [tool.uv.sources]
