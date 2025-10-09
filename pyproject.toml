@@ -17,6 +17,7 @@ dependencies = [
   "pydantic>=2.10.6",
   "pyheif>=0.8.0",
   "scipy>=1.15.2",
+  "pytesseract>=0.3.13",
 ]
 
 [tool.uv.sources]

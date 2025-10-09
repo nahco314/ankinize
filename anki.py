@@ -1,104 +1,22 @@
 import asyncio
-import concurrent.futures
 import html
-from collections import Counter
 from pathlib import Path
-import hashlib
-import os
-import re
 
 import genanki
-from google.cloud import texttospeech
 
 from model import FinalResult, Word, MetaData
 from utils import retrynize
 
-TTS_SEMAPHORE = asyncio.Semaphore(5)
-
-
-@retrynize
-def generate_tts_file_gcloud_sync(text: str, lang_code: str = "en-US") -> Path:
-    """
-    Google Cloud Text-to-Speech を使って .mp3 を生成し、ファイルパスを返す同期関数。
-    既に同一テキストの音声ファイルがあれば再生成しない (キャッシュ)。
-    """
-
-    text = text.replace("<red>", "").replace("</red>", "")  # 赤字タグは削除
-
-    # テキストに対してハッシュを作り、ファイル名を一意に。
-    hash_val = hashlib.md5(text.encode("utf-8")).hexdigest()[:10]
-    out_file = Path(f"tts/{hash_val}.mp3")
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if out_file.exists():
-        # 既に作ったファイルがあれば再利用
-        return out_file
-
-    # =============================
-    # 1) TTS クライアント初期化
-    # =============================
-    # 環境変数 GOOGLE_APPLICATION_CREDENTIALS が設定されている場合は自動検出。
-    # あるいは下記のようにファイルを直接指定してもOK:
-    # client = texttospeech.TextToSpeechClient.from_service_account_file("path/to/key.json")
-    client = texttospeech.TextToSpeechClient()
-
-    # =============================
-    # 2) 音声合成リクエスト作成
-    # =============================
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-
-    voice = texttospeech.VoiceSelectionParams(
-        language_code=lang_code,
-        name="en-US-Wavenet-F",
-        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL,
-    )
-
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3,
-        # speaking_rate=1.0, pitch=0.0 など調整可能
-    )
-
-    # =============================
-    # 3) 音声合成リクエスト実行
-    # =============================
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config,
-    )
-
-    # =============================
-    # 4) MP3ファイルに保存
-    # =============================
-    with open(out_file, "wb") as f:
-        f.write(response.audio_content)
-
-    return out_file
-
-
-async def generate_tts_file_gcloud_async(text: str, lang_code: str = "en-US") -> Path:
-    """
-    generate_tts_file_gcloud_sync をスレッドプールで非同期実行し、並列で TTS 処理する。
-    """
-    loop = asyncio.get_running_loop()
-    async with TTS_SEMAPHORE:
-        # セマフォで同時実行数を制限
-        return await loop.run_in_executor(None, generate_tts_file_gcloud_sync, text, lang_code)
-
-
 my_model = genanki.Model(
-    1607392319,
-    "Simple Model",
+    1607392320,  # 新しいID
+    "Simple Model v2",
     fields=[
         {"name": "english"},
         {"name": "japanese"},
-        {"name": "description"},
-        {"name": "sub_problem_statements"},
-        {"name": "sub_problem_answers"},
-        {"name": "notes"},
-        {"name": "phonetic"},
+        {"name": "casual_tag"},
+        {"name": "examples"},
+        {"name": "additional"},
         {"name": "meta_png"},
-        {"name": "audio"},
     ],
     templates=[
         {
@@ -108,38 +26,34 @@ my_model = genanki.Model(
       <!-- 英単語(メイン) -->
       <div class="front-question">{{english}}</div>
 
-      <!-- sub_problem_statements が空でなければ表示 -->
-      {{#sub_problem_statements}}
-      <div class="sub-problem-statements">{{sub_problem_statements}}</div>
-      {{/sub_problem_statements}}
-
-      <!-- notes が空でなければ表示 -->
-      {{#notes}}
-      <div class="notes">{{notes}}</div>
-      {{/notes}}
+      <!-- casual_tag が空でなければ表示 -->
+      {{#casual_tag}}
+      <div class="notes">{{casual_tag}}</div>
+      {{/casual_tag}}
     </div>
     """,
             "afmt": """
     <div class="card">
       <!-- 裏面でも問題文（表面）を再掲 -->
-      {{FrontSide}}
+      <!-- 英単語(メイン) -->
+      <div class="front-question">{{english}}</div>
+
+      <!-- casual_tag が空でなければ表示 -->
+      {{#casual_tag}}
+      <div class="notes">{{casual_tag}}</div>
+      {{/casual_tag}}
       <hr id="answer">
 
       <div class="answer-section">
         {{#japanese}}<div class="japanese">{{japanese}}</div>{{/japanese}}
-        {{#description}}<div class="description">{{description}}</div>{{/description}}
 
-        {{#sub_problem_answers}}
-        <div class="sub-problem-answers">{{sub_problem_answers}}</div>
-        {{/sub_problem_answers}}
+        {{#examples}}
+        <div class="description">{{examples}}</div>
+        {{/examples}}
 
-        {{#phonetic}}
-        <div class="phonetic">{{phonetic}}</div>
-        {{/phonetic}}
-
-        {{#audio}}
-        <div class="audio">{{audio}}</div>
-        {{/audio}}
+        {{#additional}}
+        <div class="additional">{{additional}}</div>
+        {{/additional}}
       </div>
     </div>
     """,
@@ -164,15 +78,6 @@ my_model = genanki.Model(
       font-weight: bold;
       margin-bottom: 0.5em;
       color: #2c3e50;
-    }
-
-    /* サブ問題など */
-    .sub-problem-statements,
-    .sub-problem-answers {
-      margin: 1em 0;
-      padding: 0.75em;
-      border-left: 4px solid #3498db;
-      background: #ecf9ff;
     }
 
     /* notes */
@@ -202,17 +107,19 @@ my_model = genanki.Model(
       color: red;
     }
 
-    /* 説明 */
+    /* 例文 */
     .description {
       margin-top: 1em;
       color: #444;
     }
 
-    /* フォネティック */
-    .phonetic {
+    /* 追加情報 */
+    .additional {
       margin-top: 1em;
-      font-style: italic;
-      color: #7f8c8d;
+      padding: 0.75em;
+      border-left: 4px solid #3498db;
+      background: #ecf9ff;
+      color: #444;
     }
 
     /* 区切り線 */
@@ -223,15 +130,6 @@ my_model = genanki.Model(
     }
     """,
 )
-
-
-class IdManager:
-    def __init__(self):
-        self.counter = Counter()
-
-    def get_id(self, name) -> int:
-        self.counter[name] += 1
-        return hash(f"{self.counter[name]}-{name}")
 
 
 def escape(string: str) -> str:
@@ -247,7 +145,6 @@ def escape(string: str) -> str:
     RED_CLOSE = "###RED_CLOSE###"
 
     # <red>... </red> をプレースホルダに置換
-    # （正規表現を使わず単純置換でもOKですが、一度に全部→戻す形が手軽）
     string = string.replace("<red>", RED_OPEN).replace("</red>", RED_CLOSE)
 
     # 2) HTMLエスケープ
@@ -265,34 +162,20 @@ def escape(string: str) -> str:
 
 async def gen_note_async(word: Word, metadata: MetaData) -> genanki.Note:
     """
-    Word の情報からノートを作る。
-    ただし TTS ファイル生成 (gTTS) を非同期化。
+    Word の情報からノートを作る（非同期構造は保持）
     """
-    # サブ問題
-    if not word.sub_problems:
-        sub_problem_statements = ""
-        sub_problem_answers = ""
-    elif len(word.sub_problems) == 1:
-        sub_problem_statements = escape(word.sub_problems[0].question)
-        sub_problem_answers = escape(word.sub_problems[0].answer)
-    else:
-        sub_problem_statements = ""
-        sub_problem_answers = ""
-        id_manager = IdManager()
-        for sp in word.sub_problems:
-            sub_problem_statements += f"<div>{escape(sp.question)}</div>"
-            sub_problem_answers += f"<div>{escape(sp.answer)}</div>"
+    # casualタグ
+    casual_tag = ""
+    if word.casual:
+        casual_tag = "口語"
 
-    # notes
-    notes = ""
-    for n in word.notes:
-        notes += f"<div>{escape(n.value)}</div>"
-
-    # TTS の音声ファイルを生成（非同期）
-    tts_file_path = await generate_tts_file_gcloud_async(word.word)
-
-    # Anki フィールドに [sound:xxx.mp3] を仕込む
-    audio_field = f"[sound:{tts_file_path.name}]"  # パスのうちファイル名のみ指定
+    # 例文を組み立て
+    examples = ""
+    if word.example_en or word.example_ja:
+        if word.example_en:
+            examples += f"<div>{escape(word.example_en)}</div>"
+        if word.example_ja:
+            examples += f"<div>{escape(word.example_ja)}</div>"
 
     # Noteオブジェクト生成
     note = genanki.Note(
@@ -300,29 +183,22 @@ async def gen_note_async(word: Word, metadata: MetaData) -> genanki.Note:
         fields=[
             escape(word.word),  # english
             escape(word.answer),  # japanese
-            escape(word.description).replace("\n", "<br>"),  # description
-            sub_problem_statements,  # sub_problem_statements
-            sub_problem_answers,  # sub_problem_answers
-            notes,  # notes
-            escape(word.phonetic),  # phonetic
-            str(metadata.input_image_name),  # meta_png
-            audio_field  # audio
+            casual_tag,  # casual_tag
+            examples,  # examples
+            escape(word.additional).replace("\n", "<br>") if word.additional else "",  # additional
+            str(metadata.input_image_name) if hasattr(metadata, 'input_image_name') else "",  # meta_png
         ],
     )
     return note
 
 
-############################
-# メインの処理を async 化
-############################
-
 async def main():
-    base = Path("./outputs-1-normal")
-    my_deck = genanki.Deck(2059400110, "システム英単語 Basic")
+    base = Path("./outputs-2-normal")
+    my_deck = genanki.Deck(2059400111, "速読英熟語")
 
-    # JSON を走査して Word, MetaData を取得する処理（例）
+    # JSON を走査して Word, MetaData を取得する処理
     all_tasks = []
-    for i in range(311):
+    for i in range(144):
         normal_path = base / f"{i}.json"
         minimal_path = base / f"{i}-minimal.json"
 
@@ -336,20 +212,15 @@ async def main():
                     task = asyncio.create_task(gen_note_async(c, final_res.metadata))
                     all_tasks.append(task)
 
-    # ここで一気に TTS を並列実行させ、Noteを作る
+    # ここで一気にノート生成
     notes = await asyncio.gather(*all_tasks)
 
     # できあがった Note をデッキに追加
     for note in notes:
         my_deck.add_note(note)
 
-    # メディアファイル（生成された mp3）を全て追加
-    # TTSをキャッシュしているので、"tts"フォルダ内すべてをメディアとして含める方法が楽です
-    tts_dir = Path("tts")
-    media_files = [str(mp3) for mp3 in tts_dir.glob("*.mp3")]
-
+    # パッケージ作成（メディアファイルなし）
     package = genanki.Package(my_deck)
-    package.media_files = media_files
 
     # apkgファイル出力
     package.write_to_file("output.apkg")

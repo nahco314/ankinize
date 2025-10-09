@@ -1,13 +1,62 @@
 import glob
 import os
+import re
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pyheif
+import pytesseract
+
 from page_dewarp import page_dewarp
 from PIL import Image
 import pillow_heif
+
+
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+
+
+def auto_rotate_image(image: np.ndarray) -> np.ndarray:
+    """
+    画像の向きをTesseract OSDを使って自動検出し、正位置に回転させる。
+    入力・出力ともにOpenCVの画像形式(numpy array, BGR)。
+
+    注意: この関数を使用するには、Tesseract OCRエンジンが
+          システムにインストールされている必要があります。
+    """
+    # グレースケールに変換した方がOSDの精度が安定する場合があります
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    try:
+        config_str = '--psm 0'
+
+        # TesseractのOSD機能を使って回転角度や確信度などを取得
+        # lang='jpn+eng' のように言語を指定すると精度が上がることがあります
+        osd = pytesseract.image_to_osd(gray, output_type=pytesseract.Output.DICT, lang='osd+jpn+eng', config=config_str)
+
+        print(osd)
+
+        # 検出された回転角度を取得（検出失敗時は0度とする）
+        rotation_angle = osd.get('rotate', 0)
+        # 確信度もログ出力しておくとデバッグに便利です
+        # print(f"Detected rotation: {rotation_angle} degrees, Confidence: {osd.get('orientation_conf')}")
+
+        rotated_image = image
+
+        # 検出された角度に応じて画像を回転させる
+        if rotation_angle == 90:
+            rotated_image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        elif rotation_angle == 180:
+            rotated_image = cv2.rotate(image, cv2.ROTATE_180)
+        elif rotation_angle == 270:
+            rotated_image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+        return rotated_image
+
+    except pytesseract.TesseractError as e:
+        print(f"Tesseract OSDでエラーが発生しました: {e}")
+        # エラーが発生した場合は、元の画像をそのまま返す
+        return image
 
 
 def remove_shadows_and_flatten(image):
@@ -109,7 +158,7 @@ def read_heic_to_numpy(file_path: str):
 
 
 def main():
-    name = "1-normal"
+    name = "2-normal"
 
     # 入力パスを取得
     input_files = sorted(Path(f"./inputs-{name}").glob("*.heic"))
@@ -130,11 +179,14 @@ def main():
         # HEIC読み込み
         image = read_heic_to_numpy(input_file)
 
+        image = auto_rotate_image(image)
+
         # 1. ページの歪み補正
         try:
             # warped = page_dewarp(image)
             raise Exception
         except:
+            # raise
             warped = image
 
         # 2. カラー調整 (赤 + 白黒 / 白黒のみ / 赤のみ)
