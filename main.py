@@ -12,7 +12,7 @@ from agents import (
     Agent,
     Runner,
     OpenAIChatCompletionsModel,
-    enable_verbose_stdout_logging,
+    enable_verbose_stdout_logging, ModelSettings,
 )
 
 from cloud_vision import cloud_vision_ocr
@@ -65,13 +65,14 @@ normal_format_text = """
 """
 
 
-@retrynize
-async def process_normal(ctx: Context, ocr_agent) -> Result:
+# @retrynize
+def process_normal(ctx: Context, ocr_agent) -> Result:
     llm_ocr_text = f"""
 以下は、日本の大学受験用英熟語帳である「鉄緑会　東大英単語英熟語　鉄壁」の1セクションの画像です。
 この英熟語帳をデータ化するために構造化して、指定されたスキーマのJSONとして出力してください。
 
-- 灰色の長方形で示される、「単語のブロックの前にある、その単語たちがどういうくくりなのか、という見出し」を「title」と呼びます。例えば「〜〜の類義語」みたいなやつです。
+- 比較的小さな灰色の長方形で示される、「単語のブロックの前にある、その単語たちがどういうくくりなのか、という見出し」を「title」と呼びます。例えば「〜〜の類義語」みたいなやつです。
+  - **セクションとくくりは違います。** 「SECTION #1 「重要な・ささいな」」のように書いてある大見出しがセクションで、それより小さな区分けがくくりです。この、より小さな「くくり」の方を重視し、titleにもこちらを入れてください。
 - また、くくりの表示の前に少し書いてある数行の、くくりについての説明、みたいな部分を「lead」と呼びます。「次は〜〜の類義語です。日本語では〜〜という〜〜ですが、...」みたいなやつ。
 - また、そのくくりの単語が全部終わったあとに、「Check!」みたいな軽い数問がついてることがあります。これらはquestionとanswerからなるJSONオブジェクトのリストとして、check_questionsに格納してください。
   - 後述しますが、単語の中で赤く強調されている部分は<red></red>タグで囲みますが、Check!の部分はすべて赤いので、これは別に強調ではないので、<red>で囲まないでください。
@@ -97,7 +98,7 @@ JSON schema:
             }
         )
 
-    llm_ocr_result = await Runner.run(
+    llm_ocr_result = Runner.run_sync(
         ocr_agent,
         [
             {
@@ -117,7 +118,7 @@ JSON schema:
     return llm_ocr_result.final_output
 
 
-async def process(idx, name, p_range: range):
+def process(idx, name, p_range: range):
     input_base = Path(f"inputs-teppeki")
     output_base = Path(f"outputs-teppeki")
 
@@ -145,8 +146,7 @@ async def process(idx, name, p_range: range):
         json_schema=json_schema,
     )
 
-    task_normal = asyncio.create_task(process_normal(ctx, ocr_agent))
-    res = await task_normal
+    res = process_normal(ctx, ocr_agent)
 
     final_res = FinalResult(
         result=res,
@@ -162,7 +162,7 @@ async def process(idx, name, p_range: range):
     print(f"Processed {idx}: {name}")
 
 
-async def main():
+def main():
     sections_raw = [
         ["SECTION #1", "重要な・ささいな", 1],
         ["SECTION #2", "特徴・明確さ・点", 13],
@@ -225,8 +225,8 @@ async def main():
             (i, sections_raw[i][0], sections_raw[i][1], range(start + 21, end + 21))
         )
 
-    await process(0, f"{sections[0][1]} {sections[0][2]}", sections[0][3])
+    process(0, f"{sections[0][1]} {sections[0][2]}", sections[0][3])
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
