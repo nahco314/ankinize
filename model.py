@@ -9,19 +9,30 @@ from pydantic import BaseModel, TypeAdapter
 
 class Word(BaseModel):
     word: str
+    right: str
+    importance_level: int
+    phonetic: str
+
+
+class CheckQuestion(BaseModel):
+    question: str
     answer: str
-    casual: bool
-    example_en: str
-    example_ja: str
-    additional: str
+
+
+class WordGroup(BaseModel):
+    title: str
+    lead: str
+    check_questions: list[CheckQuestion]
+    words: list[Word]
 
 
 class Result(BaseModel):
-    content: list[Word]
+    content: list[WordGroup]
 
 
 class MetaData(BaseModel):
-    input_image_name: str
+    section_idx: int
+    section: str
 
 
 class FinalResult(BaseModel):
@@ -38,10 +49,17 @@ class StripFenceSchema(AgentOutputSchemaBase):
         if self._strict:
             self._schema = ensure_strict_json_schema(self._schema)
 
-    def is_plain_text(self) -> bool: return False
-    def name(self) -> str: return self.model.__name__
-    def json_schema(self) -> dict[str, Any]: return self._schema
-    def is_strict_json_schema(self) -> bool: return self._strict
+    def is_plain_text(self) -> bool:
+        return False
+
+    def name(self) -> str:
+        return self.model.__name__
+
+    def json_schema(self) -> dict[str, Any]:
+        return self._schema
+
+    def is_strict_json_schema(self) -> bool:
+        return self._strict
 
     def validate_json(self, json_str: str) -> Any:
         s = json_str.strip()
@@ -54,4 +72,6 @@ class StripFenceSchema(AgentOutputSchemaBase):
             print(json_str)
             print("----------------------------------------")
             print(s)
-            raise ModelBehaviorError(f"Invalid JSON for {self.model.__name__}: {e}") from e
+            raise ModelBehaviorError(
+                f"Invalid JSON for {self.model.__name__}: {e}"
+            ) from e
