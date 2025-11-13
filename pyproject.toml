@@ -18,6 +18,7 @@ dependencies = [
   "pyheif>=0.8.0",
   "scipy>=1.15.2",
   "pytesseract>=0.3.13",
+  "outlines>=1.2.8",
 ]
 
 [tool.uv.sources]

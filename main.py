@@ -1,10 +1,15 @@
 import asyncio
+import io
 import json
 import os
 from functools import partial
 from itertools import batched
 
+import PIL
+import openai
 from openai import AsyncOpenAI
+from outlines import from_openai
+from outlines.inputs import Chat, Image
 from pydantic import BaseModel
 from pathlib import Path
 
@@ -12,7 +17,8 @@ from agents import (
     Agent,
     Runner,
     OpenAIChatCompletionsModel,
-    enable_verbose_stdout_logging, ModelSettings,
+    enable_verbose_stdout_logging,
+    ModelSettings,
 )
 
 from cloud_vision import cloud_vision_ocr
@@ -76,8 +82,11 @@ def process_normal(ctx: Context, ocr_agent) -> Result:
 - また、くくりの表示の前に少し書いてある数行の、くくりについての説明、みたいな部分を「lead」と呼びます。「次は〜〜の類義語です。日本語では〜〜という〜〜ですが、...」みたいなやつ。
 - また、そのくくりの単語が全部終わったあとに、「Check!」みたいな軽い数問がついてることがあります。これらはquestionとanswerからなるJSONオブジェクトのリストとして、check_questionsに格納してください。
   - 後述しますが、単語の中で赤く強調されている部分は<red></red>タグで囲みますが、Check!の部分はすべて赤いので、これは別に強調ではないので、<red>で囲まないでください。
+- 入力データには、セクション全体の復習のためのReview Testというものが含まれている場合がありますが、これは完全に無視してください。
 - 各単語について、後述するフォーマットにしたがって、その単語自身(右側に書いているやつ)、発音、左側の説明・意味などをすべて文字起こしし、適切なJSONオブジェクトにまとめてください。
-- 各くくりのブロックについて、{{"title": くくりのtitle, "lead": リード文, "check_questions": 前述のcheck_questionのリスト, "words": [このくくりに属する、後述する形式の単語のオブジェクトのリスト]}}という形式のJSONオブジェクトにまとめてください。
+- 各くくりのブロックについて、指定するJSON Schema形式のJSONオブジェクトにまとめてください。
+
+- **出力されたJSONをそのままパースして使用するため、構文エラーやSchemaへの不適合がない、正確なJSONを出力するよう努めてください。**
 
 ---
 
@@ -89,33 +98,49 @@ JSON schema:
 
     images = []
 
-    for p in ctx.paths:
-        images.append(
-            {
-                "type": "input_image",
-                "detail": "high",
-                "image_url": process_image(p),
-            }
-        )
+    for p in ctx.paths[:2]:
+        # images.append(
+        #     {
+        #         "type": "image",
+        #         "image": Image(PIL.Image.open(io.BytesIO(p.read_bytes()))),
+        #     }
+        # )
+        im = PIL.Image.open(p)
+        im = im.convert("RGB")
+        images.append(Image(im))
 
-    llm_ocr_result = Runner.run_sync(
-        ocr_agent,
-        [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": llm_ocr_text,
-                    },
-                    *images,
-                ],
-            },
-        ],
+    model = from_openai(
+        openai.OpenAI(
+            api_key=os.getenv("CLAUDE_API_KEY"),
+            base_url="https://api.anthropic.com/v1/",
+        ),
+        "claude-opus-4-1-20250805",
     )
+
+    # llm_ocr_result = Runner.run_sync(
+    #     ocr_agent,
+    #     [
+    #         {
+    #             "role": "user",
+    #             "content": [
+    #                 {
+    #                     "type": "input_text",
+    #                     "text": llm_ocr_text,
+    #                 },
+    #                 *images,
+    #             ],
+    #         },
+    #     ],
+    # )
     # llm_ocr_json = llm_ocr_result.final_output.model_dump_json()
 
-    return llm_ocr_result.final_output
+    return model.generate(
+        [
+            llm_ocr_text,
+            *images,
+        ],
+        Result,
+    )
 
 
 def process(idx, name, p_range: range):
@@ -125,15 +150,15 @@ def process(idx, name, p_range: range):
     json_schema = json.dumps(Result.model_json_schema())
 
     external_client = AsyncOpenAI(
-        api_key=os.getenv("OPEN_ROUTER_API_KEY"),
-        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("CLAUDE_API_KEY"),
+        base_url="https://api.anthropic.com/v1/",
     )
 
     ocr_agent = Agent(
         name="Wordbook OCR",
         output_type=StripFenceSchema(Result),
         model=OpenAIChatCompletionsModel(
-            model="anthropic/claude-opus-4.1",
+            model="claude-opus-4-1-20250805",
             openai_client=external_client,
         ),
         instructions="指示に従い、OCR/構造化を行ってください。なお、出力には結果のみを含め、それ以外のあらゆる情報や補足、コードブロックの記号などは一切含まないでください。",
@@ -147,6 +172,9 @@ def process(idx, name, p_range: range):
     )
 
     res = process_normal(ctx, ocr_agent)
+
+    print("res!!!")
+    print(res)
 
     final_res = FinalResult(
         result=res,

@@ -6,6 +6,8 @@ import functools
 
 
 def process_image(image: Path) -> str:
+    return f"https://37dd16869bcd.ngrok-free.app/{image.name}"
+
     ext = image.suffix.lower()
     type_: str
     if ext == ".png":
