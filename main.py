@@ -190,7 +190,7 @@ JSON schema:
 
 def process(idx, name, p_range: list[int]):
     input_base = Path(f"inputs-teppeki")
-    output_base = Path(f"outputs-teppeki")
+    output_base = Path(f"raw-outputs-teppeki")
 
     json_schema = json.dumps(Result.model_json_schema())
 
