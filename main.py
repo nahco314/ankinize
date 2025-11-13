@@ -74,23 +74,76 @@ normal_format_text = """
 # @retrynize
 def process_normal(ctx: Context, ocr_agent) -> Result:
     llm_ocr_text = f"""
-以下は、日本の大学受験用英熟語帳である「鉄緑会　東大英単語英熟語　鉄壁」の1セクションの画像です。
-この英熟語帳をデータ化するために構造化して、指定されたスキーマのJSONとして出力してください。
+以下は、日本の大学受験用英単語帳である「鉄緑会　東大英単語英熟語　鉄壁」の数ページの画像です。
+この英単語帳をデータ化するために、与えた全ページについて順に、構成要素をOCRし、後述する方法で本の角構成要素をイベントとして扱い、本の内容を厳密に上から順番にイベント列として出力してください。
+具体的には、LLMを用いて単語帳に含まれる文章や、単語、見出しなどの各構成要素を「イベント」として扱いやすいデータ列に起こし、それらをPythonを用いて各ページごとに結合して、JSON等に構造化します。
 
-- 比較的小さな灰色の長方形で示される、「単語のブロックの前にある、その単語たちがどういうくくりなのか、という見出し」を「title」と呼びます。例えば「〜〜の類義語」みたいなやつです。
-  - **セクションとくくりは違います。** 「SECTION #1 「重要な・ささいな」」のように書いてある大見出しがセクションで、それより小さな区分けがくくりです。この、より小さな「くくり」の方を重視し、titleにもこちらを入れてください。
-- また、くくりの表示の前に少し書いてある数行の、くくりについての説明、みたいな部分を「lead」と呼びます。「次は〜〜の類義語です。日本語では〜〜という〜〜ですが、...」みたいなやつ。
-- また、そのくくりの単語が全部終わったあとに、「Check!」みたいな軽い数問がついてることがあります。これらはquestionとanswerからなるJSONオブジェクトのリストとして、check_questionsに格納してください。
-  - 後述しますが、単語の中で赤く強調されている部分は<red></red>タグで囲みますが、Check!の部分はすべて赤いので、これは別に強調ではないので、<red>で囲まないでください。
-- 入力データには、セクション全体の復習のためのReview Testというものが含まれている場合がありますが、これは完全に無視してください。
-- 各単語について、後述するフォーマットにしたがって、その単語自身(右側に書いているやつ)、発音、左側の説明・意味などをすべて文字起こしし、適切なJSONオブジェクトにまとめてください。
-- 各くくりのブロックについて、指定するJSON Schema形式のJSONオブジェクトにまとめてください。
+各イベントの種別は以下の通りです。
 
+- 大きな灰色の長方形で表される、「SECTION #1 「重要な・ささいな」」のように書いてある、セクションの大見出し
+  - kind: section_heading
+  - content: 見出しの内容をすべてそのまま含めてください。"SECTION #1"の部分や、「」の鉤括弧も原文ママで含めてください。
+- 比較的小さな灰色の長方形で示される、「単語のブロックの前にある、その単語たちがどういうくくりなのか」という見出し。例えば「〜〜の類義語」みたいなやつ
+  - kind: group_heading
+  - content: 見出しの内容をすべてそのまま含めてください。
+- 単語ではなく、後述する「Check!」にも「Review Test」にも含まれない、ただの本としての本文のテキスト
+  - kind: plain_text
+  - content: 本文の内容をすべてそのまま含めてください。文頭の●とかの記号なども含めてください。
+- 新たな単語の開始(単語帳部分の左側に示される)
+  - kind: start_word
+  - word: 単語そのものをそのまま含めてください。
+  - importance_level: 0, 1, または 2。単語の左側に赤いアスタリスク(*)が1つまたは2つ書いている場合があります。このときは、importance_levelを1または2にしてください。アスタリスクがない場合は0にしてください。
+  - phonetic: 発音記号をそのまま含めてください。[]で囲まれていますが、これもphoneticに含めてください。
+  - 単語の左に四角がありますが、これはチェック用の都合で配置されているものなので、OCRには含まないでください。
+  - 同様に、単語番号も載っていますが、これもOCRには含まないでください。
+  - **1つの単語について、複数の語義や説明、例文などが存在し、それぞれがmeaning_lineとなるため、1つのstart_wordは基本複数のmeaning_lineを含みます。**
+- 語義や説明、例文、類義語など、単語の右側に書かれている部分の1行
+  - kind: meaning_line
+  - content: 右側部分の1行をそのまま含めてください。
+  - 独自の形式で構造化されていますが、これらは記号などを可能な限り忠実にそのまま文字起こししてください。
+    - 形容詞や名詞であることを表す、四角の中に「形」、みたいな記号は、四角の中の1文字を"[形]"というように[]で囲んで表示してください
+      - 名詞: [名]
+      - 自動詞: [自]
+      - 他動詞: [他]
+      - 句動詞: [句]
+      - 形容詞: [形]
+      - 副詞: [副]
+    - ★や▶、□、あるいは①②などの記号はそのまま含めてください。
+  - 「1行」の意味については、論理的な1行を指します。組版の都合で改行されているに過ぎない1部分は1つのmeaning_lineとして扱います。
+  - 例文などに関しては、英文と日本語訳でそれぞれ別のmeaning_lineとしてください。
+  - 赤い文字で表示されている、強調されている重要な語義や、強調部分は、<red></red>タグで囲んでください。
+- 単語ブロックの最後に現れる、「Check!」のような軽い確認問題
+  - kind: check_problem
+  - question: 問題文をそのまま含めてください。
+  - answer: 解答文をそのまま含めてください。
+    - 解答は右端にかなり寄っています
+  - 1つの「Check!」欄には複数の問題が含まれていることがありますが、その場合はすべてを1つ1つ別のcheck_problemとして扱ってください。
+- 赤みがかった背景の、「Review Test」という見出し
+  - kind: start_review_test
+  - このイベントには特に他のフィールドは含まれません。
+- Review Test内の小見出し。赤い丸で始まる、「Yes or No?」とか「Multiple Choices」みたいな、そのあとの問題群のリード文となる小見出し
+  - kind: review_test_small_heading
+  - content: 小見出しの内容をすべてそのまま含めてください。
+- Review Test内の問題
+  - kind: review_test_problem
+  - question: 問題文をそのまま含めてください。
+  - answer: 解答文をそのまま含めてください。
+
+- 赤い文字で表示されている、強調されている重要な語義や、強調部分は、<red></red>タグで囲んでください。
+- 与えられるページは断片的であるため、前のページで定義されたstart_wordに属するmeaning_lineからページが始まる場合などもあります。その場合は適切にmeaning_lineから始めてください。
+- start_wordに属するmeaning_lineは、そのstart_wordのちょうど正確に真右から始まります。それより上のmeaning_lineは、更に前のstart_wordに属するものなので、「前のstart_wordに属するmeaning_lineを列挙する」→「新しいstart_wordを宣言」→「新しいstart_wordに属するmeaning_lineを列挙する」と適切に処理してください。
+  - 特に、ページの一番最初が唐突に前ページの単語に属するmeaning_lineから始まる場合、極めてこれらをページ内の最初の単語に属するものと混同しやすいです。垂直方向の位置関係を極めてよく観察し、厳密に上に位置するイベントから順に列挙してください。
+- ページの一番最初がreview_test_problemなどから始まる場合、これを単語などと混同してしまうかもしれません。「□12 To impose is to force somthing on others. ..................... Yes」みたいな、問題文→........→答え、みたいなやつはreview_test_problemです。
+- **importance_levelは非常に誤りが多いです。極めて慎重に判定してください**
+
+- **数ページ与えるので、全ページについてのイベント列を順に結合したものを出力してください**
+
+- 文字種の指定:
+  - 波線は、英文中では半角の「~」、日本語文中では全角の「〜」を使用
+  - セミコロンは半角。複数の語義をセミコロンで繋ぐときは、半角セミコロン+半角スペース、すなわち「1つ; 1点; 1件」のようにする
 - **出力されたJSONをそのままパースして使用するため、構文エラーやSchemaへの不適合がない、正確なJSONを出力するよう努めてください。**
 
 ---
-
-{normal_format_text}
 
 JSON schema:
 {ctx.json_schema}
@@ -98,16 +151,14 @@ JSON schema:
 
     images = []
 
-    for p in ctx.paths[:2]:
-        # images.append(
-        #     {
-        #         "type": "image",
-        #         "image": Image(PIL.Image.open(io.BytesIO(p.read_bytes()))),
-        #     }
-        # )
-        im = PIL.Image.open(p)
-        im = im.convert("RGB")
-        images.append(Image(im))
+    for p in ctx.paths:
+        images.append(
+            {
+                "type": "input_image",
+                "detail": "high",
+                "image_url": process_image(p),
+            }
+        )
 
     model = from_openai(
         openai.OpenAI(
@@ -117,48 +168,42 @@ JSON schema:
         "claude-opus-4-1-20250805",
     )
 
-    # llm_ocr_result = Runner.run_sync(
-    #     ocr_agent,
-    #     [
-    #         {
-    #             "role": "user",
-    #             "content": [
-    #                 {
-    #                     "type": "input_text",
-    #                     "text": llm_ocr_text,
-    #                 },
-    #                 *images,
-    #             ],
-    #         },
-    #     ],
-    # )
+    llm_ocr_result = Runner.run_sync(
+        ocr_agent,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": llm_ocr_text,
+                    },
+                    *images,
+                ],
+            },
+        ],
+    )
     # llm_ocr_json = llm_ocr_result.final_output.model_dump_json()
 
-    return model.generate(
-        [
-            llm_ocr_text,
-            *images,
-        ],
-        Result,
-    )
+    return llm_ocr_result.final_output
 
 
-def process(idx, name, p_range: range):
+def process(idx, name, p_range: list[int]):
     input_base = Path(f"inputs-teppeki")
     output_base = Path(f"outputs-teppeki")
 
     json_schema = json.dumps(Result.model_json_schema())
 
     external_client = AsyncOpenAI(
-        api_key=os.getenv("CLAUDE_API_KEY"),
-        base_url="https://api.anthropic.com/v1/",
+        api_key=os.getenv("OPEN_ROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
     )
 
     ocr_agent = Agent(
         name="Wordbook OCR",
         output_type=StripFenceSchema(Result),
         model=OpenAIChatCompletionsModel(
-            model="claude-opus-4-1-20250805",
+            model="anthropic/claude-sonnet-4.5",
             openai_client=external_client,
         ),
         instructions="指示に従い、OCR/構造化を行ってください。なお、出力には結果のみを含め、それ以外のあらゆる情報や補足、コードブロックの記号などは一切含まないでください。",
@@ -173,15 +218,9 @@ def process(idx, name, p_range: range):
 
     res = process_normal(ctx, ocr_agent)
 
-    print("res!!!")
-    print(res)
-
     final_res = FinalResult(
         result=res,
-        metadata=MetaData(
-            section_idx=idx,
-            section=name,
-        ),
+        metadata=MetaData(page=f"{' '.join(map(str, list(p_range)))}"),
     )
 
     with open(output_base / f"{idx}.json", "w") as f:
@@ -245,15 +284,10 @@ def main():
         ["null", "null", 653],
     ]
 
-    sections = []
-    for i in range(len(sections_raw) - 1):
-        start = sections_raw[i][2]
-        end = sections_raw[i + 1][2]
-        sections.append(
-            (i, sections_raw[i][0], sections_raw[i][1], range(start + 21, end + 21))
-        )
+    batchs = list(enumerate(batched(range(22, 22 + 712), 5)))
 
-    process(0, f"{sections[0][1]} {sections[0][2]}", sections[0][3])
+    for i, part in batchs[:1]:
+        process(i, f"i", list(part))
 
 
 if __name__ == "__main__":

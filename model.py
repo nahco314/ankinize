@@ -1,38 +1,84 @@
 import enum
 import re
-from typing import Type, Any
+from typing import Type, Any, Literal, Annotated
 
 from agents import AgentOutputSchemaBase, ModelBehaviorError
 from agents.strict_schema import ensure_strict_json_schema
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, Field
 
 
-class Word(BaseModel):
+class SectionHeading(BaseModel):
+    kind: Literal["section_heading"]
+    content: str
+
+
+class GroupHeading(BaseModel):
+    kind: Literal["group_heading"]
+    content: str
+
+
+class PlainText(BaseModel):
+    kind: Literal["plain_text"]
+    content: str
+
+
+class StartWord(BaseModel):
+    kind: Literal["start_word"]
     word: str
-    right: str
     importance_level: int
     phonetic: str
 
 
-class CheckQuestion(BaseModel):
+class MeaningLine(BaseModel):
+    kind: Literal["meaning_line"]
+    content: str
+
+
+class CheckProblem(BaseModel):
+    kind: Literal["check_problem"]
     question: str
     answer: str
 
 
-class WordGroup(BaseModel):
-    title: str
-    lead: str
-    check_questions: list[CheckQuestion]
-    words: list[Word]
+class StartReviewTest(BaseModel):
+    kind: Literal["start_review_test"]
+    pass
+
+
+
+class ReviewTestSmallHeading(BaseModel):
+    kind: Literal["review_test_small_heading"]
+    content: str
+
+
+class ReviewTestProblem(BaseModel):
+    kind: Literal["review_test_problem"]
+    question: str
+    answer: str
+
+
+type Event = Annotated[
+    (
+        SectionHeading
+        | GroupHeading
+        | PlainText
+        | StartWord
+        | MeaningLine
+        | CheckProblem
+        | StartReviewTest
+        | ReviewTestSmallHeading
+        | ReviewTestProblem
+    ),
+    Field(discriminator="kind"),
+]
 
 
 class Result(BaseModel):
-    content: list[WordGroup]
+    events: list[Event]
 
 
 class MetaData(BaseModel):
-    section_idx: int
-    section: str
+    page: str
 
 
 class FinalResult(BaseModel):
