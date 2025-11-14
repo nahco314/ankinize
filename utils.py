@@ -6,7 +6,7 @@ import functools
 
 
 def process_image(image: Path) -> str:
-    return f"https://37dd16869bcd.ngrok-free.app/{image.name}"
+    return f"https://promoting-commitments-undefined-arrested.trycloudflare.com/{image.name}"
 
     ext = image.suffix.lower()
     type_: str

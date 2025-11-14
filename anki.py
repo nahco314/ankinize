@@ -1,235 +1,380 @@
-import asyncio
+import argparse
+import hashlib
 import html
+import json
+import re
 from pathlib import Path
 
 import genanki
 
-from model import FinalResult, Word, MetaData
-from utils import retrynize
 
-my_model = genanki.Model(
-    1607392320,  # 新しいID
-    "Simple Model v2",
-    fields=[
-        {"name": "english"},
-        {"name": "japanese"},
-        {"name": "casual_tag"},
-        {"name": "examples"},
-        {"name": "additional"},
-        {"name": "meta_png"},
-    ],
-    templates=[
-        {
-            "name": "Card 1",
-            "qfmt": """
-    <div class="card">
-      <!-- 英単語(メイン) -->
-      <div class="front-question">{{english}}</div>
-
-      <!-- casual_tag が空でなければ表示 -->
-      {{#casual_tag}}
-      <div class="notes">{{casual_tag}}</div>
-      {{/casual_tag}}
-    </div>
-    """,
-            "afmt": """
-    <div class="card">
-      <!-- 裏面でも問題文（表面）を再掲 -->
-      <!-- 英単語(メイン) -->
-      <div class="front-question">{{english}}</div>
-
-      <!-- casual_tag が空でなければ表示 -->
-      {{#casual_tag}}
-      <div class="notes">{{casual_tag}}</div>
-      {{/casual_tag}}
-      <hr id="answer">
-
-      <div class="answer-section">
-        {{#japanese}}<div class="japanese">{{japanese}}</div>{{/japanese}}
-
-        {{#examples}}
-        <div class="description">{{examples}}</div>
-        {{/examples}}
-
-        {{#additional}}
-        <div class="additional">{{additional}}</div>
-        {{/additional}}
-      </div>
-    </div>
-    """,
-        },
-    ],
-    css="""
-    /* カード全体 */
-    .card {
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 16px;
-      line-height: 1.6;
-      color: #333;
-      background-color: #fafafa;
-      padding: 12px;
-      border-radius: 8px;
-    }
-
-    /* 英単語(メイン) */
-    .front-question {
-      text-align: center;  /* 中央揃え */
-      font-size: 1.8em;    /* 大きめにして主役感を出す */
-      font-weight: bold;
-      margin-bottom: 0.5em;
-      color: #2c3e50;
-    }
-
-    /* notes */
-    .notes {
-      font-size: 0.9em;
-      color: #555;
-      margin-top: 0.5em;
-      padding: 0.5em;
-      border: 1px dashed #ccc;
-      background-color: #fefefe;
-    }
-
-    /* 裏面の全体 */
-    .answer-section {
-      /* 必要に応じてスタイルを追加 */
-    }
-
-    /* 日本語訳など(赤色はやめて太字のみ) */
-    .japanese {
-      font-size: 1.2em;
-      font-weight: bold;
-      margin-top: 0.5em;
-      color: #333; /* 赤色を廃止 */
-    }
-
-    .red-text {
-      color: red;
-    }
-
-    /* 例文 */
-    .description {
-      margin-top: 1em;
-      color: #444;
-    }
-
-    /* 追加情報 */
-    .additional {
-      margin-top: 1em;
-      padding: 0.75em;
-      border-left: 4px solid #3498db;
-      background: #ecf9ff;
-      color: #444;
-    }
-
-    /* 区切り線 */
-    hr#answer {
-      margin: 1em 0;
-      border: 0;
-      border-top: 1px solid #ccc;
-    }
-    """,
-)
+MODEL_ID = 2025111401  # 固定（テンプレートが変わる場合のみ更新）
+DEFAULT_DECK_ID_SEED = 942311  # デッキ名と合わせてハッシュ化して決定
 
 
-def escape(string: str) -> str:
+def sanitize_tag(s: str) -> str:
     """
-    HTMLエスケープ & 改行→<br> 変換しつつ、
-    <red>〜</red> で囲まれた部分だけは赤字にする。
+    Anki タグは空白区切り。空白→_ にし、/ や \, 二重引用符など
+    問題が出やすい文字を安全側に置換。
     """
-    if not string:
+    if not s:
+        return "no_section"
+    s = s.strip()
+    s = re.sub(r"\s+", "_", s)
+    s = s.replace("/", "_").replace("\\", "_").replace('"', "").replace("'", "")
+    # タグは長すぎると扱いにくいので適度に丸める
+    return s[:64]
+
+
+def stars_html(level: int) -> str:
+    """
+    importance_level が 1 → * を1つ、2 → ** を2つ（赤）
+    それ以外/未指定は空。
+    """
+    n = 0
+    try:
+        n = int(level)
+    except Exception:
+        n = 0
+    n = max(0, min(n, 2))
+    return f'<span class="importance">{"*" * n}</span>' if n > 0 else ""
+
+
+def escape_preserving_red(text: str) -> str:
+    """
+    HTMLエスケープしつつ、<red>…</red> だけは赤字に変換。
+    改行は <br>。
+    """
+    if text is None:
         return ""
-
-    # 1) プレースホルダで <red> と </red> を一旦退避
     RED_OPEN = "###RED_OPEN###"
     RED_CLOSE = "###RED_CLOSE###"
-
-    # <red>... </red> をプレースホルダに置換
-    string = string.replace("<red>", RED_OPEN).replace("</red>", RED_CLOSE)
-
-    # 2) HTMLエスケープ
-    string = html.escape(string)
-
-    # 3) 改行文字を <br> に
-    string = string.replace("\n", "<br>")
-
-    # 4) プレースホルダを <span style="color:red;"> に置換
-    string = string.replace(RED_OPEN, '<span class="red-text">')
-    string = string.replace(RED_CLOSE, "</span>")
-
-    return string
+    text = text.replace("<red>", RED_OPEN).replace("</red>", RED_CLOSE)
+    text = html.escape(text)
+    text = text.replace("\n", "<br>")
+    text = text.replace(RED_OPEN, '<span class="red-text">')
+    text = text.replace(RED_CLOSE, "</span>")
+    return text
 
 
-async def gen_note_async(word: Word, metadata: MetaData) -> genanki.Note:
+def render_phonetic(ph: str) -> str:
+    if not ph:
+        return ""
+    return f'<span class="phonetic">{html.escape(ph)}</span>'
+
+
+def render_meanings(meanings, f=False) -> str:
     """
-    Word の情報からノートを作る（非同期構造は保持）
+    meanings: list[str] を <div> で縦に積む（<red>対応）。
     """
-    # casualタグ
-    casual_tag = ""
-    if word.casual:
-        casual_tag = "口語"
+    if not meanings:
+        return ""
+    parts = [f"<div>{escape_preserving_red(m)}</div>" for m in meanings if m]
 
-    # 例文を組み立て
-    examples = ""
-    if word.example_en or word.example_ja:
-        if word.example_en:
-            examples += f"<div>{escape(word.example_en)}</div>"
-        if word.example_ja:
-            examples += f"<div>{escape(word.example_ja)}</div>"
+    if len(parts) == 1:
+        return parts[0]
+    else:
+        res = parts[0]
 
-    # Noteオブジェクト生成
-    note = genanki.Note(
-        model=my_model,
+        if f:
+            res += "<br>"
+        else:
+            return res
+
+        res += "".join(parts[1:])
+
+        return res
+
+
+def render_group_context(group: dict) -> str:
+    """
+    裏面の下部に載せる、同一 group の参照コンテンツ：
+    - タイトル
+    - リード（段落）
+    - 単語一覧（左=単語+発音+重要度, 右=意味）
+    """
+    title = html.escape(group.get("title", ""))
+    # lead は段落配列（改行→<br>）
+    lead_parts = []
+    for para in group.get("lead", []) or []:
+        lead_parts.append(f"<p>{escape_preserving_red(para)}</p>")
+    lead_html = "".join(lead_parts)
+
+    # 単語一覧テーブル（2カラム）
+    rows = []
+    for w in group.get("words", []) or []:
+        left = (
+            f'<div class="gw-left">'
+            f"{stars_html(w.get('importance_level'))}"
+            f'<span class="gw-word">{html.escape(w.get("word", ""))}</span>'
+            f"{render_phonetic(w.get('phonetic', ''))}"
+            f"</div>"
+        )
+        right = f'<div class="gw-right">{render_meanings(w.get("meanings", []))}</div>'
+        rows.append(f'<div class="gw-row">{left}{right}</div>')
+
+    words_table = f'<div class="group-words">{"".join(rows)}</div>'
+
+    return f"""
+    <div class="group-context">
+      <div class="group-title">{title}</div>
+      {words_table}
+      <div class="group-lead">{lead_html}</div>
+    </div>
+    """
+
+
+def make_model() -> genanki.Model:
+    """
+    3フィールド構成：
+      0: FrontWord（単語+発音+重要度）
+      1: Meanings（意味ブロック）
+      2: GroupContext（同一 group のタイトル/リード/全語一覧）
+    """
+    return genanki.Model(
+        MODEL_ID,
+        "Grouped Vocabulary v1",
         fields=[
-            escape(word.word),  # english
-            escape(word.answer),  # japanese
-            casual_tag,  # casual_tag
-            examples,  # examples
-            escape(word.additional).replace("\n", "<br>") if word.additional else "",  # additional
-            str(metadata.input_image_name) if hasattr(metadata, 'input_image_name') else "",  # meta_png
+            {"name": "FrontWord"},
+            {"name": "Meanings"},
+            {"name": "GroupContext"},
         ],
+        templates=[
+            {
+                "name": "Card 1",
+                "qfmt": """
+<div class="card">
+  <div class="front-question">{{FrontWord}}</div>
+</div>
+""",
+                "afmt": """
+<div class="card">
+  <div class="front-question">{{FrontWord}}</div>
+  <hr id="answer">
+  <div class="meanings">{{Meanings}}</div>
+  <div class="ref-header">Group Reference</div>
+  {{#GroupContext}}
+  {{GroupContext}}
+  {{/GroupContext}}
+</div>
+""",
+            }
+        ],
+        css="""
+/* ベース */
+.card {
+  font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  color: #222;
+  background-color: #fafafa;
+  padding: 12px;
+  border-radius: 10px;
+}
+
+/* 表面：単語行（中央寄せ・大きめ） */
+.front-question {
+  text-align: center;
+  margin: 0.2em 0 0.4em 0;
+  color: #24333e;
+}
+
+.front-question .gw {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+}
+
+.front-question .importance {
+  color: #e53935; /* 赤アスタリスク */
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.front-question .english {
+  font-size: 1.85em;
+  font-weight: 800;
+}
+
+.front-question .phonetic,
+.phonetic {
+  font-size: 0.95em;
+  color: #6a7279;
+}
+
+/* 区切り線（上下の分け方） */
+hr#answer {
+  margin: 0.8em 0 0.9em 0;
+  border: 0;
+  border-top: 1px solid #d8dee4;
+}
+
+/* 意味（裏面の主コンテンツ） */
+.meanings {
+  font-size: 1.05em;
+}
+
+.red-text { color: #d32f2f; }
+
+/* 参照セクション（スクロール領域） */
+.ref-header {
+  margin-top: 0.8em;
+  font-size: 0.9em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7c8790;
+}
+
+.group-context {
+  margin-top: 0.4em;
+  max-height: 45vh;             /* 長い group でも崩れないように */
+  overflow: auto;
+  padding-top: 0.5em;
+  border-top: 1px dashed #e0e3e7;
+  background: #fff;
+  border-radius: 6px;
+}
+
+/* group タイトルとリード */
+.group-title {
+  font-weight: 700;
+  color: #37474f;
+  margin: 0.1em 0 0.35em 0;
+}
+
+.group-lead p {
+  margin: 0.35em 0;
+  color: #4a4f55;
+}
+
+/* 単語一覧（2カラム） */
+.group-words {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* 各行は 2カラムに分割（モバイル→縦並び、広い画面→2列） */
+.gw-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  background: #fcfdff;
+}
+
+@media (min-width: 540px) {
+  .gw-row {
+    grid-template-columns: 0.42fr 0.58fr;
+  }
+}
+
+/* 左：単語・発音・重要度 */
+.gw-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5em;
+  min-width: 0;
+}
+
+.gw-left .importance {
+  color: #e53935;
+  font-weight: 700;
+}
+
+.gw-left .gw-word {
+  font-weight: 700;
+  color: #2b3a42;
+  white-space: nowrap;
+}
+
+/* 右：意味（複数行OK） */
+.gw-right {
+  min-width: 0;
+}
+
+/* 表面の FrontWord を構成する内側（テンプレから入れやすく） */
+.front-question .importance + .english { margin-left: 0.1em; }
+""",
     )
-    return note
 
 
-async def main():
-    base = Path("./outputs-2-normal")
-    my_deck = genanki.Deck(2059400111, "速読英熟語")
-
-    # JSON を走査して Word, MetaData を取得する処理
-    all_tasks = []
-    for i in range(144):
-        normal_path = base / f"{i}.json"
-        minimal_path = base / f"{i}-minimal.json"
-
-        for path in [normal_path, minimal_path]:
-            if path.exists():
-                content = path.read_text(encoding="utf-8")
-                final_res = FinalResult.model_validate_json(content)
-
-                # 複数 Word を async ノート生成
-                for c in final_res.result.content:
-                    task = asyncio.create_task(gen_note_async(c, final_res.metadata))
-                    all_tasks.append(task)
-
-    # ここで一気にノート生成
-    notes = await asyncio.gather(*all_tasks)
-
-    # できあがった Note をデッキに追加
-    for note in notes:
-        my_deck.add_note(note)
-
-    # パッケージ作成（メディアファイルなし）
-    package = genanki.Package(my_deck)
-
-    # apkgファイル出力
-    package.write_to_file("output.apkg")
-    print("Done: output.apkg を生成しました。")
+def front_word_html(word: str, phonetic: str, level: int) -> str:
+    return (
+        '<div class="gw">'
+        f"{stars_html(level)}"
+        f'<span class="english">{html.escape(word)}</span>'
+        f"{render_phonetic(phonetic)}"
+        "</div>"
+    )
 
 
-############################
-# スクリプト実行部
-############################
+def note_guid(section: str, group_title: str, word: str) -> str:
+    base = f"{section}||{group_title}||{word}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
+def build_deck_id(deck_name: str) -> int:
+    h = hashlib.sha1(f"{DEFAULT_DECK_ID_SEED}:{deck_name}".encode("utf-8")).hexdigest()
+    # genanki Deck ID は 32bit 程度でOK
+    return int(h[:8], 16)
+
+
+def build_notes(data, deck, model):
+    """
+    data: JSON のトップ（list[section]）を想定
+    """
+    if not isinstance(data, list):
+        raise ValueError("トップレベルは配列（sections の配列）を想定しています。")
+
+    for sec in data:
+        section_heading = sec.get("section_heading", "")
+        section_tag = sanitize_tag(section_heading)
+
+        for group in sec.get("groups", []) or []:
+            group_title = group.get("title", "")
+            group_context = render_group_context(group)
+
+            for w in group.get("words", []) or []:
+                word = w.get("word", "")
+                if not word:
+                    continue
+                meanings_html = render_meanings(w.get("meanings", []), True)
+                front_html = front_word_html(
+                    word=word,
+                    phonetic=w.get("phonetic", ""),
+                    level=w.get("importance_level", 0),
+                )
+
+                note = genanki.Note(
+                    model=model,
+                    fields=[front_html, meanings_html, group_context],
+                    guid=note_guid(section_heading, group_title, word),
+                    tags=[section_tag],  # section をタグへ
+                )
+                deck.add_note(note)
+
+
+def main():
+    input_path = Path("./res.json")
+    if not input_path.exists():
+        raise FileNotFoundError(f"JSON が見つかりません: {input_path}")
+
+    data = json.loads(input_path.read_text(encoding="utf-8"))
+
+    deck_id = build_deck_id("鉄壁")
+    deck = genanki.Deck(deck_id, "鉄壁")
+    model = make_model()
+
+    build_notes(data, deck, model)
+
+    pkg = genanki.Package(deck)
+    pkg.write_to_file("output.apkg")
+    print(f"Done")
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -2,6 +2,7 @@ import enum
 import re
 from typing import Type, Any, Literal, Annotated
 
+import json_repair
 from agents import AgentOutputSchemaBase, ModelBehaviorError
 from agents.strict_schema import ensure_strict_json_schema
 from pydantic import BaseModel, TypeAdapter, Field
@@ -43,7 +44,6 @@ class CheckProblem(BaseModel):
 class StartReviewTest(BaseModel):
     kind: Literal["start_review_test"]
     pass
-
 
 
 class ReviewTestSmallHeading(BaseModel):
@@ -112,6 +112,9 @@ class StripFenceSchema(AgentOutputSchemaBase):
         m = re.match(r"^\s*```(?:json|JSON)?\s*\n(.*?)\n?\s*```$", s, re.DOTALL)
         if m:
             s = m.group(1).strip()
+
+        s = json_repair.repair_json(s)
+
         try:
             return self.ta.validate_json(s)  # ← ここで Pydantic 検証
         except Exception as e:
@@ -121,3 +124,17 @@ class StripFenceSchema(AgentOutputSchemaBase):
             raise ModelBehaviorError(
                 f"Invalid JSON for {self.model.__name__}: {e}"
             ) from e
+
+
+class Word(BaseModel):
+    word: str
+    importance_level: int
+    phonetic: str
+    meanings: list[str]
+
+
+class Group(BaseModel):
+    title: str
+    lead: list[str]
+    words: list[Word]
+    check_problems: list[tuple[str, str]]

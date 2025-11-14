@@ -19,6 +19,9 @@ dependencies = [
   "scipy>=1.15.2",
   "pytesseract>=0.3.13",
   "outlines>=1.2.8",
+  "json-repair>=0.53.0",
+  "numpy>=2.2.6",
+  "easyocr>=1.7.2",
 ]
 
 [tool.uv.sources]

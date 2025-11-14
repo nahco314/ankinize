@@ -71,8 +71,8 @@ normal_format_text = """
 """
 
 
-# @retrynize
-def process_normal(ctx: Context, ocr_agent) -> Result:
+@retrynize
+async def process_normal(ctx: Context, ocr_agent) -> Result:
     llm_ocr_text = f"""
 以下は、日本の大学受験用英単語帳である「鉄緑会　東大英単語英熟語　鉄壁」の数ページの画像です。
 この英単語帳をデータ化するために、与えた全ページについて順に、構成要素をOCRし、後述する方法で本の角構成要素をイベントとして扱い、本の内容を厳密に上から順番にイベント列として出力してください。
@@ -128,6 +128,8 @@ def process_normal(ctx: Context, ocr_agent) -> Result:
   - kind: review_test_problem
   - question: 問題文をそのまま含めてください。
   - answer: 解答文をそのまま含めてください。
+  - 「□12 To impose is to force somthing on others. ..................... Yes」みたいなやつです。....で区切られる左側がquestion、右側がanswerです。
+  - 当然ながら、.....部分は出力には含めません
 
 - 赤い文字で表示されている、強調されている重要な語義や、強調部分は、<red></red>タグで囲んでください。
 - 与えられるページは断片的であるため、前のページで定義されたstart_wordに属するmeaning_lineからページが始まる場合などもあります。その場合は適切にmeaning_lineから始めてください。
@@ -137,11 +139,14 @@ def process_normal(ctx: Context, ocr_agent) -> Result:
 - **importance_levelは非常に誤りが多いです。極めて慎重に判定してください**
 
 - **数ページ与えるので、全ページについてのイベント列を順に結合したものを出力してください**
+- すべてのページのすべての単語/構成要素を、**必ずすべて出力してください。**
 
 - 文字種の指定:
   - 波線は、英文中では半角の「~」、日本語文中では全角の「〜」を使用
   - セミコロンは半角。複数の語義をセミコロンで繋ぐときは、半角セミコロン+半角スペース、すなわち「1つ; 1点; 1件」のようにする
+  - /や:などは半角を用いる。その際のスペーシングには半角空白を用いる
 - **出力されたJSONをそのままパースして使用するため、構文エラーやSchemaへの不適合がない、正確なJSONを出力するよう努めてください。**
+  - 改行などはいらないです
 
 ---
 
@@ -160,15 +165,7 @@ JSON schema:
             }
         )
 
-    model = from_openai(
-        openai.OpenAI(
-            api_key=os.getenv("CLAUDE_API_KEY"),
-            base_url="https://api.anthropic.com/v1/",
-        ),
-        "claude-opus-4-1-20250805",
-    )
-
-    llm_ocr_result = Runner.run_sync(
+    llm_ocr_result = await Runner.run(
         ocr_agent,
         [
             {
@@ -188,7 +185,7 @@ JSON schema:
     return llm_ocr_result.final_output
 
 
-def process(idx, name, p_range: list[int]):
+async def process(idx, name, p_range: list[int]):
     input_base = Path(f"inputs-teppeki")
     output_base = Path(f"raw-outputs-teppeki")
 
@@ -216,7 +213,7 @@ def process(idx, name, p_range: list[int]):
         json_schema=json_schema,
     )
 
-    res = process_normal(ctx, ocr_agent)
+    res = await process_normal(ctx, ocr_agent)
 
     final_res = FinalResult(
         result=res,
@@ -229,7 +226,7 @@ def process(idx, name, p_range: list[int]):
     print(f"Processed {idx}: {name}")
 
 
-def main():
+async def main():
     sections_raw = [
         ["SECTION #1", "重要な・ささいな", 1],
         ["SECTION #2", "特徴・明確さ・点", 13],
@@ -284,11 +281,26 @@ def main():
         ["null", "null", 653],
     ]
 
-    batchs = list(enumerate(batched(range(22, 22 + 712), 5)))
+    batchs = list(enumerate(batched(range(22, 673), 5)))
+    retrys = [92]
 
-    for i, part in batchs[:1]:
-        process(i, f"i", list(part))
+    for i in retrys:
+        num, parts = batchs[i]
+        await process(num, num, list(parts))
+
+    return
+
+    bb = list(batched(batchs, 5))
+
+    tasks = []
+
+    for i, part in bb[26][:1]:
+        if Path(f"raw-outputs-teppeki/{i}.json").exists():
+            continue
+        tasks.append(process(i, i, list(part)))
+
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
