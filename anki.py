@@ -6,10 +6,13 @@ import re
 from pathlib import Path
 
 import genanki
+from google.cloud import texttospeech
 
 
 MODEL_ID = 2025111401  # 固定（テンプレートが変わる場合のみ更新）
 DEFAULT_DECK_ID_SEED = 942311  # デッキ名と合わせてハッシュ化して決定
+TTS_CACHE_DIR = Path("tts")
+VOICE_NAME = "en-US-Wavenet-F"
 
 
 def sanitize_tag(s: str) -> str:
@@ -138,6 +141,7 @@ def make_model() -> genanki.Model:
             {"name": "FrontWord"},
             {"name": "Meanings"},
             {"name": "GroupContext"},
+            {"name": "Audio"},
         ],
         templates=[
             {
@@ -152,6 +156,9 @@ def make_model() -> genanki.Model:
   <div class="front-question">{{FrontWord}}</div>
   <hr id="answer">
   <div class="meanings">{{Meanings}}</div>
+  {{#Audio}}
+  <div class="audio">{{Audio}}</div>
+  {{/Audio}}
   <div class="ref-header">Group Reference</div>
   {{#GroupContext}}
   {{GroupContext}}
@@ -298,6 +305,10 @@ hr#answer {
 
 /* 表面の FrontWord を構成する内側（テンプレから入れやすく） */
 .front-question .importance + .english { margin-left: 0.1em; }
+
+.audio {
+  margin-top: 0.6em;
+}
 """,
     )
 
@@ -323,7 +334,7 @@ def build_deck_id(deck_name: str) -> int:
     return int(h[:8], 16)
 
 
-def build_notes(data, deck, model):
+def build_notes(data, deck, model, media_files: set[Path]):
     """
     data: JSON のトップ（list[section]）を想定
     """
@@ -349,13 +360,78 @@ def build_notes(data, deck, model):
                     level=w.get("importance_level", 0),
                 )
 
+                audio_field, media_path = build_audio_field(word)
+                if media_path:
+                    media_files.add(media_path)
+
                 note = genanki.Note(
                     model=model,
-                    fields=[front_html, meanings_html, group_context],
+                    fields=[
+                        front_html,
+                        meanings_html,
+                        group_context,
+                        audio_field,
+                    ],
                     guid=note_guid(section_heading, group_title, word),
                     tags=[section_tag],  # section をタグへ
                 )
                 deck.add_note(note)
+
+
+def normalized_tts_text(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("<red>", "").replace("</red>", "").strip()
+
+
+_tts_client: texttospeech.TextToSpeechClient | None = None
+
+
+def get_tts_client() -> texttospeech.TextToSpeechClient:
+    global _tts_client
+    if _tts_client is None:
+        _tts_client = texttospeech.TextToSpeechClient()
+    return _tts_client
+
+
+def generate_tts_file(text: str, lang_code: str = "en-US") -> Path:
+    clean_text = normalized_tts_text(text)
+    if not clean_text:
+        raise ValueError("TTS text is empty")
+
+    hash_val = hashlib.md5(clean_text.encode("utf-8")).hexdigest()[:10]
+    TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out_file = TTS_CACHE_DIR / f"{hash_val}.mp3"
+    if out_file.exists():
+        return out_file
+
+    client = get_tts_client()
+    synthesis_input = texttospeech.SynthesisInput(text=clean_text)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code=lang_code,
+        name=VOICE_NAME,
+        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL,
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
+
+    response = client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config,
+    )
+    out_file.write_bytes(response.audio_content)
+    return out_file
+
+
+def build_audio_field(text: str) -> tuple[str, Path | None]:
+    try:
+        tts_path = generate_tts_file(text)
+    except Exception as exc:
+        print(f"[WARN] Failed to generate TTS for '{text}': {exc}")
+        return "", None
+    return f"[sound:{tts_path.name}]", tts_path
 
 
 def main():
@@ -369,9 +445,12 @@ def main():
     deck = genanki.Deck(deck_id, "鉄壁")
     model = make_model()
 
-    build_notes(data, deck, model)
+    media_files: set[Path] = set()
+    build_notes(data, deck, model, media_files)
 
     pkg = genanki.Package(deck)
+    if media_files:
+        pkg.media_files = sorted(str(path) for path in media_files)
     pkg.write_to_file("output.apkg")
     print(f"Done")
 

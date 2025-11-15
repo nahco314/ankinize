@@ -1,5 +1,6 @@
 import json
 import re
+import string
 from pathlib import Path
 from model import (
     FinalResult,
@@ -157,11 +158,27 @@ def preprocess_1(events: list[Event]) -> list[Event]:
     for e in events:
         match e:
             case PlainText(content=c) if c.startswith("* "):
-                res.append(
-                    StartWord(
-                        kind="start_word", word=c[2:], importance_level=2, phonetic=""
+                c = c[2:]
+                m = re.fullmatch("(.*) (\[[句名他自].*)", c)
+
+                if not m:
+                    res.append(
+                        StartWord(
+                            kind="start_word", word=c[2:], importance_level=2, phonetic=""
+                        )
                     )
-                )
+
+                else:
+                    res.append(
+                        StartWord(
+                            kind="start_word", word=m.group(1), importance_level=2, phonetic=""
+                        )
+                    )
+                    res.append(
+                        MeaningLine(
+                            kind="meaning_line", content=m.group(2)
+                        )
+                    )
             case _:
                 res.append(e)
 
@@ -194,6 +211,10 @@ def main():
     for _, gs in res:
         for g in gs:
             for word in g.words:
+                for c in word.word:
+                    if c not in string.ascii_letters + " " + "[]()" + ".,/~" + "'":
+                        print(c)
+
                 for i in range(len(word.meanings)):
                     m = word.meanings[i]
                     m = re.sub("[‡]", "", m)
